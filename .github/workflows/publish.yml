@@ -9,6 +9,10 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Required-reviewer environment: a pushed tag queues the publish until a
+    # maintainer approves the run, and npm's trusted publisher config pins to
+    # this environment name so no other workflow can mint a publish token.
+    environment: npm-publish
     permissions:
       contents: read
       id-token: write
@@ -20,6 +24,11 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
           cache: yarn
+
+      - name: Upgrade npm
+        # Trusted publishing (OIDC) needs npm >= 11.5.1; the Node 22 image
+        # ships npm 10.x.
+        run: npm install -g npm@latest
 
       - name: Verify the package is publishable
         # A published tarball ships only package.json, so any git: dependency
