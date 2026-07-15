@@ -1,12 +1,19 @@
 {
   "compilerOptions": {
-    "noImplicitAny": true,
-    "target": "es2017",
+    "target": "es2020",
     "module": "commonjs",
+    "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
+    "lib": ["es2020", "dom"],
+    "types": ["node", "mocha", "chai"],
     "declaration": true,
+    "rootDir": "./src",
     "outDir": "./build",
     "strict": true,
-    "esModuleInterop": true
+    "noImplicitAny": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "**/*.test.ts"]

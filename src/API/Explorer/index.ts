@@ -1,11 +1,10 @@
-import { AssetsApiParams, OfferApiParams, TransferApiParams } from 'atomicassets/build/API/Explorer/Params';
-import { ILog } from 'atomicassets/build/API/Explorer/Objects';
+import { AssetsApiParams, ILog, OfferApiParams, TransferApiParams } from '@atomichub/atomicassets';
 
 import ApiError from '../../Errors/ApiError';
 import { AuctionApiParams, BaseAssetFilterParams, BuyofferApiParams, SaleApiParams } from './Params';
-import { IAuction, IBuyoffer, IMarketAsset, IMarketConfig, IMarketOffer, IMarketplace, IMarketToken, IMarketTransfer, IPriceStats, ISale } from './Objects';
+import { IAuction, IBuyoffer, IMarketAsset, IMarketConfig, IMarketOffer, IMarketplace, IMarketToken, IMarketTransfer, IPriceStats, IRoyaltyAttributeRule, IRoyaltyConfig, IRoyaltyTemplateRule, ISale } from './Objects';
 
-type Fetch = (input?: Request | string, init?: RequestInit) => Promise<Response>;
+type Fetch = typeof fetch;
 type ApiArgs = { fetch?: Fetch };
 
 export type DataOptions = Array<{key: string, value: any, type?: string}>;
@@ -38,11 +37,7 @@ export default class AtomicMarketApi {
         this.endpoint = endpoint;
         this.namespace = namespace;
 
-        if (args.fetch) {
-            this.fetchBuiltin = args.fetch;
-        } else {
-            this.fetchBuiltin = (<any>global).fetch;
-        }
+        this.fetchBuiltin = args.fetch ?? fetch;
     }
 
     async getSales(options: SaleApiParams = {}, page: number = 1, limit: number = 100, data: DataOptions = []): Promise<ISale[]> {
@@ -103,6 +98,30 @@ export default class AtomicMarketApi {
 
     async getConfig(): Promise<IMarketConfig> {
         return await this.fetchEndpoint('/v1/config', {});
+    }
+
+    /* ROYALTY API (AtomicMarket v2 read layer) */
+
+    // The API responds 416 for a collection with no royalty config — that is
+    // the normal "no config" case, mapped to null here, never an error.
+    async getRoyaltyConfig(collection: string): Promise<IRoyaltyConfig | null> {
+        try {
+            return await this.fetchEndpoint('/v1/royalties/' + collection, {});
+        } catch (error) {
+            if (error instanceof ApiError && error.status === 416) {
+                return null;
+            }
+
+            throw error;
+        }
+    }
+
+    async getRoyaltyTemplateRules(collection: string, page: number = 1, limit: number = 100): Promise<IRoyaltyTemplateRule[]> {
+        return await this.fetchEndpoint('/v1/royalties/' + collection + '/templates', {page, limit});
+    }
+
+    async getRoyaltyAttributeRules(collection: string, page: number = 1, limit: number = 100): Promise<IRoyaltyAttributeRule[]> {
+        return await this.fetchEndpoint('/v1/royalties/' + collection + '/attributes', {page, limit});
     }
 
     /* PRICE API */
@@ -174,7 +193,7 @@ export default class AtomicMarketApi {
 
             json = await response.json();
         } catch (e) {
-            throw new ApiError(e.message, 500);
+            throw new ApiError((e as Error).message, 500);
         }
 
         if (response.status !== 200) {

@@ -1,45 +1,72 @@
 {
-  "name": "atomicmarket",
-  "description": "js module to fetch data from the atomicmarket contract",
+  "name": "@atomichub/atomicmarket",
+  "description": "JavaScript/TypeScript SDK for the AtomicMarket NFT marketplace contract on Antelope chains: read sales, auctions, and royalties, and build v2 royalty actions",
   "keywords": [
     "atomicmarket",
     "atomicassets",
+    "atomichub",
+    "wax",
+    "antelope",
+    "eosio",
     "nft",
     "blockchain",
-    "eosio",
-    "pinknetwork"
+    "sdk"
   ],
-  "author": "pink.network",
-  "homepage": "https://atomicmarket.io",
+  "author": "AtomicHub",
+  "homepage": "https://github.com/atomicassets/atomicmarket-sdk",
   "bugs": {
-    "url": "https://github.com/pinknetworkx/atomicmarket-js/issues",
-    "email": "pinknetworkx@gmail.com"
+    "url": "https://github.com/atomicassets/atomicmarket-sdk/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/atomicassets/atomicmarket-sdk.git"
   },
   "license": "MIT",
-  "version": "1.1.2",
-  "main": "build/index.js",
+  "version": "2.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "build/index.cjs",
+  "module": "build/index.mjs",
   "types": "build/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./build/index.d.mts",
+        "default": "./build/index.mjs"
+      },
+      "require": {
+        "types": "./build/index.d.ts",
+        "default": "./build/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "build/"
+  ],
   "scripts": {
-    "build:npm": "tsc",
-    "build:web": "webpack --config webpack.prod.js",
-    "build": "yarn run build:npm && yarn run build:web",
-    "lint": "tslint -p tsconfig.json",
-    "test": "mocha -r ts-node/register test/**/*.test.ts"
+    "build": "tsup",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint .",
+    "pretest": "tsup",
+    "test": "mocha -r ts-node/register test/**/*.test.ts",
+    "prepare": "tsup",
+    "prepack": "tsup"
   },
   "dependencies": {
-    "atomicassets": "^1.4.0"
+    "@atomichub/atomicassets": "git+https://github.com/atomicassets/atomicassets-sdk.git#feat/v2-modernization"
   },
   "devDependencies": {
-    "@types/node": "^14.17.5",
-    "node-fetch": "^2.6.1",
-    "ts-loader": "^9.2.3",
-    "ts-node": "^10.1.0",
-    "tslint": "^5.20.1",
-    "tslint-consistent-codestyle": "^1.16.0",
-    "tslint-eslint-rules": "^5.4.0",
-    "tslint-origin-ordered-imports-rule": "^1.2.2",
-    "typescript": "^4.3.5",
-    "webpack": "^5.45.1",
-    "webpack-cli": "^4.7.2"
+    "@types/chai": "^4.3.11",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^22.0.0",
+    "chai": "^4.4.1",
+    "eslint": "^9.17.0",
+    "mocha": "^11.0.0",
+    "ts-node": "^10.9.2",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.0",
+    "typescript-eslint": "^8.59.0"
   }
 }
