@@ -15,7 +15,8 @@ export {
 
 // AtomicHub public endpoint presets (re-exported from @atomichub/atomicassets)
 // and the preconfigured market client factory.
-export { AtomicHubNetwork, NETWORK_ENDPOINTS, marketApiForNetwork } from './Networks';
+export type { AtomicHubNetwork } from './Networks';
+export { NETWORK_ENDPOINTS, marketApiForNetwork } from './Networks';
 
 // Typed rows for the contract's on-chain tables (get_table_rows shapes).
 export * from './Tables';

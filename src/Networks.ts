@@ -1,11 +1,13 @@
-import { AtomicHubNetwork, NETWORK_ENDPOINTS } from '@atomichub/atomicassets';
+import type { AtomicHubNetwork } from '@atomichub/atomicassets';
+import { NETWORK_ENDPOINTS } from '@atomichub/atomicassets';
 
 import AtomicMarketApi from './API/Explorer';
 
 // AtomicHub's public API endpoints, baked in as convenient defaults.
 // Any compatible deployment can still be passed straight to the constructor.
 
-export { AtomicHubNetwork, NETWORK_ENDPOINTS };
+export type { AtomicHubNetwork };
+export { NETWORK_ENDPOINTS };
 
 export function marketApiForNetwork(
     network: AtomicHubNetwork, options?: ConstructorParameters<typeof AtomicMarketApi>[2]
