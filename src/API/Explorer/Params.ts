@@ -1,5 +1,4 @@
-import { AssetFilterParams, DateBoundaryParams, PrimaryBoundaryParams } from 'atomicassets/build/API/Explorer/Params';
-import { OrderParam } from 'atomicassets/build/API/Explorer/Enums';
+import { AssetFilterParams, DateBoundaryParams, OrderParam, PrimaryBoundaryParams } from '@atomichub/atomicassets';
 
 import { AuctionSort, AuctionState, BuyofferSort, BuyofferState, SaleSort, SaleState } from './Enums';
 

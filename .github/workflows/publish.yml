@@ -1,0 +1,91 @@
+name: Publish
+
+# Tag-triggered publish to npm. First publish is gated on maintainer sign-off;
+# the workflow only runs when a v* tag is pushed and NPM_TOKEN is configured.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Required-reviewer environment: a pushed tag queues the publish until a
+    # maintainer approves the run, and npm's trusted publisher config pins to
+    # this environment name so no other workflow can mint a publish token.
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: yarn
+
+      - name: Upgrade npm
+        # Trusted publishing (OIDC) needs npm >= 11.5.1; the Node 22 image
+        # ships npm 10.x.
+        run: npm install -g npm@latest
+
+      - name: Verify the package is publishable
+        # A published tarball ships only package.json, so any git: dependency
+        # would make every consumer install resolve a mutable branch tip (and
+        # fail outright once the branch is deleted). Also require the pushed
+        # tag to match package.json's version so a mistyped tag cannot publish
+        # the wrong version.
+        run: |
+          node -e '
+            const {dependencies = {}} = require("./package.json");
+            const gitDeps = Object.entries(dependencies)
+              .filter(([, spec]) => /(^|\+)(git|ssh)(\+|:)|\.git(#|$)|^github:|^[^@/]+\/[^@/]+#/.test(spec));
+            if (gitDeps.length > 0) {
+              console.error("Refusing to publish with git-resolved dependencies:");
+              for (const [name, spec] of gitDeps) console.error(`  ${name}: ${spec}`);
+              process.exit(1);
+            }
+          '
+          PKG_VERSION="$(node -p 'require("./package.json").version')"
+          if [ "${GITHUB_REF_NAME}" != "v${PKG_VERSION}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${PKG_VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Prewarm yarn cache for a git dependency
+        # Same workaround as ci.yml: yarn v1 builds a git dependency in a
+        # nested install that races the outer fetch on a cold cache and
+        # corrupts it. The step self-skips once the dependency is a registry
+        # version (the publishability gate above already blocks publishing
+        # while it is not). The clone URL and ref are derived from the
+        # dependency spec in package.json so the two cannot drift.
+        run: |
+          SPEC="$(node -p '(require("./package.json").dependencies ?? {})["@atomichub/atomicassets"] ?? ""')"
+          case "$SPEC" in
+            git+*|git:*)
+              URL="${SPEC#git+}"
+              REF="${URL#*#}"
+              URL="${URL%%#*}"
+              git clone --depth 1 -b "$REF" "$URL" /tmp/prewarm-atomicassets
+              cd /tmp/prewarm-atomicassets
+              yarn install --frozen-lockfile
+              ;;
+            *)
+              echo "No git dependency to prewarm"
+              ;;
+          esac
+
+      - name: Install
+        run: yarn install --frozen-lockfile
+
+      - name: Build
+        run: yarn run build
+
+      - name: Test
+        run: yarn run test
+
+      - name: Publish
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
