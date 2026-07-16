@@ -1,0 +1,14 @@
+// Type-checks the test tree, plus whatever src files the tests import.
+// tsconfig.json excludes the test tree so that tsup builds and emits
+// declarations for src alone; rootDir widens to the repo root because the
+// test files sit outside src.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "declaration": false,
+    "noEmit": true
+  },
+  "include": ["test/**/*.ts"],
+  "exclude": ["node_modules"]
+}
