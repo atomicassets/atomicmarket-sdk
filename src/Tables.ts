@@ -1,4 +1,4 @@
-import { AttributeRoyaltyValue, RoyaltyPair } from './Actions/Generator';
+import type { AttributeRoyaltyValue, RoyaltyPair } from './Actions/Generator';
 
 // Typed rows for AtomicMarket v2 contract tables as returned by
 // get_table_rows JSON deserialization. Field widths follow the on-chain ABI:
