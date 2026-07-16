@@ -47,10 +47,10 @@
   ],
   "scripts": {
     "build": "tsup",
-    "check-types": "tsc --noEmit",
+    "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint .",
     "pretest": "tsup",
-    "test": "mocha -r ts-node/register test/**/*.test.ts",
+    "test": "mocha -r ts-node/register/transpile-only test/**/*.test.ts",
     "prepare": "tsup",
     "prepack": "tsup"
   },

@@ -48,6 +48,12 @@ jobs:
       - name: Install
         run: yarn install --frozen-lockfile
 
+      # Type-checks src and the test tree. tsconfig.json excludes the test
+      # tree so that tsup emits declarations for src alone, so this needs the
+      # dedicated tsconfig.test.json to cover what that one doesn't.
+      - name: Type check
+        run: yarn run check-types
+
       - name: Build
         run: yarn run build
 
