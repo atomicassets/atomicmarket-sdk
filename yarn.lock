@@ -2,9 +2,10 @@
 # yarn lockfile v1
 
 
-"@atomichub/atomicassets@git+https://github.com/atomicassets/atomicassets-sdk.git#feat/v2-modernization":
+"@atomichub/atomicassets@^2.0.0":
   version "2.0.0"
-  resolved "git+https://github.com/atomicassets/atomicassets-sdk.git#d8451884647f1c752ef31592d0753d217bd84495"
+  resolved "https://registry.yarnpkg.com/@atomichub/atomicassets/-/atomicassets-2.0.0.tgz#aeccfafd69cbbca138a83b1d2fc20032721dad86"
+  integrity sha512-4H/BTZqHPXOZ09rtQiQ7Yda+W+e//1NF4BiVEkCNRJ/M4DSR4sbGB1WzMUmODDTy2Y+Mp4uYG7d+GQLqTbbvmw==
 
 "@cspotcode/source-map-support@^0.8.0":
   version "0.8.1"

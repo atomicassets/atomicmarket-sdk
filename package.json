@@ -55,7 +55,7 @@
     "prepack": "tsup"
   },
   "dependencies": {
-    "@atomichub/atomicassets": "git+https://github.com/atomicassets/atomicassets-sdk.git#feat/v2-modernization"
+    "@atomichub/atomicassets": "^2.0.0"
   },
   "devDependencies": {
     "@types/chai": "^4.3.11",
