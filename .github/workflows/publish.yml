@@ -1,7 +1,10 @@
 name: Publish
 
-# Tag-triggered publish to npm. First publish is gated on maintainer sign-off;
-# the workflow only runs when a v* tag is pushed and NPM_TOKEN is configured.
+# Tag-triggered publish to npm, authenticated by npm's trusted publisher rather
+# than a stored token. It runs only on a pushed v* tag, and only once a
+# maintainer approves the npm-publish environment. Publishing therefore needs
+# the trusted publisher registered on npmjs.com against this repository, this
+# workflow filename and that environment; no NPM_TOKEN is involved.
 on:
   push:
     tags: ['v*']
@@ -86,6 +89,9 @@ jobs:
         run: yarn run test
 
       - name: Publish
+        # No NODE_AUTH_TOKEN: npm mints a short-lived credential from the OIDC
+        # token this job requests, against the trusted publisher npmjs.com pins
+        # to this repo, workflow and environment. Supplying a token instead
+        # takes the classic auth path, which demands an interactive OTP and so
+        # can never complete unattended.
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
