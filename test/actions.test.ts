@@ -199,6 +199,146 @@ describe('MarketActionBuilder sync layer', () => {
     });
 });
 
+describe('MarketActionBuilder sale and RAM-payment actions', () => {
+    const contract = 'atomicmarket';
+    const builder = new MarketActionBuilder(contract);
+    const generator = new MarketActionGenerator(contract);
+    const authorization: EosioAuthorizationObject[] = [{actor: 'buyer', permission: 'active'}];
+
+    it('announcesale emits seller, asset_ids, listing_price, settlement_symbol and maker_marketplace verbatim', () => {
+        const actions = builder.announcesale(
+            'alice', ['1099511627776', '1099511627777'], '100.00000000 WAX', '8,WAX', 'mymarketacct'
+        );
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'announcesale',
+            data: {
+                seller: 'alice',
+                asset_ids: ['1099511627776', '1099511627777'],
+                listing_price: '100.00000000 WAX',
+                settlement_symbol: '8,WAX',
+                maker_marketplace: 'mymarketacct'
+            }
+        }]);
+    });
+
+    it('cancelsale emits sale_id as a string (uint64)', () => {
+        const actions = builder.cancelsale('42');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'cancelsale',
+            data: {
+                sale_id: '42'
+            }
+        }]);
+    });
+
+    it('assertsale emits sale_id, asset_ids_to_assert, listing_price_to_assert and settlement_symbol_to_assert', () => {
+        const actions = builder.assertsale('42', ['1099511627776'], '100.00000000 WAX', '8,WAX');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'assertsale',
+            data: {
+                sale_id: '42',
+                asset_ids_to_assert: ['1099511627776'],
+                listing_price_to_assert: '100.00000000 WAX',
+                settlement_symbol_to_assert: '8,WAX'
+            }
+        }]);
+    });
+
+    it('purchasesale emits buyer, sale_id, intended_delphi_median and taker_marketplace', () => {
+        const actions = builder.purchasesale('bob', '42', '0', 'mymarketacct');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'purchasesale',
+            data: {
+                buyer: 'bob',
+                sale_id: '42',
+                intended_delphi_median: '0',
+                taker_marketplace: 'mymarketacct'
+            }
+        }]);
+    });
+
+    it('paysaleram emits payer and sale_id', () => {
+        const actions = builder.paysaleram('mymarketacct', '42');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'paysaleram',
+            data: {
+                payer: 'mymarketacct',
+                sale_id: '42'
+            }
+        }]);
+    });
+
+    it('payauctram emits payer and auction_id', () => {
+        const actions = builder.payauctram('mymarketacct', '42');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'payauctram',
+            data: {
+                payer: 'mymarketacct',
+                auction_id: '42'
+            }
+        }]);
+    });
+
+    it('paybuyoram emits payer and buyoffer_id', () => {
+        const actions = builder.paybuyoram('mymarketacct', '42');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'paybuyoram',
+            data: {
+                payer: 'mymarketacct',
+                buyoffer_id: '42'
+            }
+        }]);
+    });
+
+    it('the builder emits no authorization and the generator emits the builder payload plus the passed authorization', async () => {
+        const cases: Array<[EosioActionData[], EosioActionObject[]]> = [
+            [
+                builder.announcesale('alice', ['1'], '1.00000000 WAX', '8,WAX', '.'),
+                await generator.announcesale(authorization, 'alice', ['1'], '1.00000000 WAX', '8,WAX', '.')
+            ],
+            [builder.cancelsale('42'), await generator.cancelsale(authorization, '42')],
+            [
+                builder.assertsale('42', ['1'], '1.00000000 WAX', '8,WAX'),
+                await generator.assertsale(authorization, '42', ['1'], '1.00000000 WAX', '8,WAX')
+            ],
+            [
+                builder.purchasesale('bob', '42', '0', '.'),
+                await generator.purchasesale(authorization, 'bob', '42', '0', '.')
+            ],
+            [builder.paysaleram('bob', '42'), await generator.paysaleram(authorization, 'bob', '42')],
+            [builder.payauctram('bob', '42'), await generator.payauctram(authorization, 'bob', '42')],
+            [builder.paybuyoram('bob', '42'), await generator.paybuyoram(authorization, 'bob', '42')]
+        ];
+
+        for (const [sync, generated] of cases) {
+            expect(sync[0]).to.not.have.property('authorization');
+            expect(generated).to.deep.equal(sync.map((action) => ({...action, authorization})));
+        }
+    });
+
+    it('uint64 identifiers above 2^53 survive verbatim through cancelsale and purchasesale', () => {
+        const max = '18446744073709551615';
+
+        expect(builder.cancelsale(max)[0].data.sale_id).to.equal(max);
+        expect(builder.purchasesale('bob', max, max, '.')[0].data.sale_id).to.equal(max);
+        expect(builder.purchasesale('bob', '42', max, '.')[0].data.intended_delphi_median).to.equal(max);
+    });
+});
+
 describe('AtomicMarketActions action-name constants', () => {
     it('every entry maps an action name to itself', () => {
         for (const [key, value] of Object.entries(AtomicMarketActions)) {

@@ -84,14 +84,16 @@ export type RoyaltyConfigInput = {
 // setattrroy value is an on-chain variant pair `[type, value]`, passed verbatim.
 export type AttributeRoyaltyValue = [string, unknown];
 
-// Sync builders for the AtomicMarket v2 royalty-config actions, returning
-// authorization-free {account, name, data} objects. None of these actions
-// carry an `authorized_*` field in `data` — the signer is implicit in the
-// transaction authorization, and adding one is not in the ABI and throws on
-// encode. Numeric coercion rules follow the ABI: uint8/uint32/int32 fields go
-// through Number(), while uint64 fields (rule_id) are forwarded as strings
-// because Number() corrupts values above 2^53 and eosio serializers accept
-// string uint64s.
+// Sync builders for the AtomicMarket v2 royalty-config, sale-lifecycle, and
+// RAM-payment actions, returning authorization-free {account, name, data}
+// objects. None of these actions carry an `authorized_*` field in `data`. The
+// signer is implicit in the transaction authorization, and adding one is not
+// in the ABI and throws on encode. Numeric coercion rules follow the ABI:
+// uint8/uint32/int32 fields go through Number(), while uint64 fields (rule_id,
+// the listing ids, intended_delphi_median) are forwarded as strings because
+// Number() corrupts values above 2^53 and eosio serializers accept string
+// uint64s. `asset` and `symbol` fields are chain-notation strings
+// ("1.00000000 WAX", "8,WAX"), passed verbatim.
 export class MarketActionBuilder {
     constructor(readonly contract: string) {
     }
@@ -147,6 +149,59 @@ export class MarketActionBuilder {
         return this._pack('delroyalconf', {collection_name});
     }
 
+    announcesale(
+        seller: string, asset_ids: string[], listing_price: string,
+        settlement_symbol: string, maker_marketplace: string
+    ): EosioActionData[] {
+        return this._pack('announcesale', {
+            seller,
+            asset_ids,
+            listing_price,
+            settlement_symbol,
+            maker_marketplace
+        });
+    }
+
+    cancelsale(sale_id: string): EosioActionData[] {
+        return this._pack('cancelsale', {sale_id});
+    }
+
+    assertsale(
+        sale_id: string, asset_ids_to_assert: string[],
+        listing_price_to_assert: string, settlement_symbol_to_assert: string
+    ): EosioActionData[] {
+        return this._pack('assertsale', {
+            sale_id,
+            asset_ids_to_assert,
+            listing_price_to_assert,
+            settlement_symbol_to_assert
+        });
+    }
+
+    purchasesale(buyer: string, sale_id: string, intended_delphi_median: string, taker_marketplace: string): EosioActionData[] {
+        return this._pack('purchasesale', {
+            buyer,
+            sale_id,
+            intended_delphi_median,
+            taker_marketplace
+        });
+    }
+
+    // The RAM actions require only the payer's own authority on chain; they
+    // are open actions any account may sign, in practice run by marketplaces
+    // as maintenance.
+    paysaleram(payer: string, sale_id: string): EosioActionData[] {
+        return this._pack('paysaleram', {payer, sale_id});
+    }
+
+    payauctram(payer: string, auction_id: string): EosioActionData[] {
+        return this._pack('payauctram', {payer, auction_id});
+    }
+
+    paybuyoram(payer: string, buyoffer_id: string): EosioActionData[] {
+        return this._pack('paybuyoram', {payer, buyoffer_id});
+    }
+
     protected _pairs(recipients: RoyaltyRecipientInput[]): RoyaltyPair[] {
         return recipients.map(({recipient, weight}) => ({recipient, weight: Number(weight)}));
     }
@@ -156,9 +211,9 @@ export class MarketActionBuilder {
     }
 }
 
-// AtomicMarket v2 royalty-config action generator. Mirrors the atomicassets
-// ActionGenerator surface (async, authorization-first); the action payloads
-// come from the sync MarketActionBuilder above.
+// AtomicMarket v2 action generator. Mirrors the atomicassets ActionGenerator
+// surface (async, authorization-first); the action payloads come from the sync
+// MarketActionBuilder above.
 export class MarketActionGenerator {
     protected readonly builder: MarketActionBuilder;
 
@@ -202,6 +257,51 @@ export class MarketActionGenerator {
         authorization: EosioAuthorizationObject[], collection_name: string
     ): Promise<EosioActionObject[]> {
         return this._authorize(authorization, this.builder.delroyalconf(collection_name));
+    }
+
+    async announcesale(
+        authorization: EosioAuthorizationObject[], seller: string, asset_ids: string[],
+        listing_price: string, settlement_symbol: string, maker_marketplace: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.announcesale(seller, asset_ids, listing_price, settlement_symbol, maker_marketplace));
+    }
+
+    async cancelsale(
+        authorization: EosioAuthorizationObject[], sale_id: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.cancelsale(sale_id));
+    }
+
+    async assertsale(
+        authorization: EosioAuthorizationObject[], sale_id: string, asset_ids_to_assert: string[],
+        listing_price_to_assert: string, settlement_symbol_to_assert: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.assertsale(sale_id, asset_ids_to_assert, listing_price_to_assert, settlement_symbol_to_assert));
+    }
+
+    async purchasesale(
+        authorization: EosioAuthorizationObject[], buyer: string, sale_id: string,
+        intended_delphi_median: string, taker_marketplace: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.purchasesale(buyer, sale_id, intended_delphi_median, taker_marketplace));
+    }
+
+    async paysaleram(
+        authorization: EosioAuthorizationObject[], payer: string, sale_id: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.paysaleram(payer, sale_id));
+    }
+
+    async payauctram(
+        authorization: EosioAuthorizationObject[], payer: string, auction_id: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.payauctram(payer, auction_id));
+    }
+
+    async paybuyoram(
+        authorization: EosioAuthorizationObject[], payer: string, buyoffer_id: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.paybuyoram(payer, buyoffer_id));
     }
 
     protected _authorize(authorization: EosioAuthorizationObject[], actions: EosioActionData[]): EosioActionObject[] {

@@ -78,6 +78,8 @@ const logs = await api.getSaleLogs('100');
 
 Each sale carries its `assets`, so rendering a listing usually needs no second call to the AtomicAssets API.
 
+`getSalesV2` and `countSalesV2` query the `/v2/sales` route, a newer materialized index with the same row shape as `/v1/sales`. Note that `/v2/sales` omits `Waiting` sales, so state filters including `Waiting` belong on the v1 route.
+
 ### Supported networks
 
 `wax`, `wax-testnet`, `vaulta`, `xpr`, `xpr-testnet`, `jungle4`.
@@ -134,6 +136,55 @@ await session.transact({
 ```
 
 `MarketActionBuilder` is synchronous and returns authorization-free `{account, name, data}` objects. If you would rather have authorization attached for you, `MarketActionGenerator` wraps the same builders.
+
+## Building market actions
+
+The sale lifecycle actions build the same way: unsigned action objects for your signing library. uint64 fields (the listing ids and `intended_delphi_median`) are strings so 64-bit values pass through without precision loss. Price fields use chain notation: `'100.00000000 WAX'` for an asset, `'8,WAX'` for a symbol.
+
+```ts
+import { MarketActionBuilder } from '@atomichub/atomicmarket';
+
+const builder = new MarketActionBuilder('atomicmarket');
+
+// List an asset for sale
+const announce = builder.announcesale(
+    'selleracct11',
+    ['1099511627776'],
+    '100.00000000 WAX',
+    '8,WAX',
+    '' // maker_marketplace: '' for none, or your registered marketplace account
+);
+
+// Buy a sale: assert what you expect to buy, then purchase
+const buy = [
+    ...builder.assertsale('42', ['1099511627776'], '100.00000000 WAX', '8,WAX'),
+    ...builder.purchasesale('buyeracct111', '42', '0', '') // taker_marketplace: '' for none, or your registered marketplace account
+];
+
+// Take a listing down
+const cancel = builder.cancelsale('42');
+```
+
+Announcing alone lists nothing; the same transaction must also offer the assets to the market contract via AtomicAssets' `createoffer` action with memo `'sale'`.
+
+A complete purchase is one transaction of three actions in order: assertsale, then a transfer to the market contract with memo `deposit` from the settlement token's own contract (`IMarketToken.token_contract`), then purchasesale. Token transfers are not AtomicMarket actions, so bring that action from your signing library or token tooling.
+
+`intended_delphi_median` is `'0'` for a sale listed directly in its settlement token. For sales priced through the Delphi oracle (listed in one currency, settled in another at the oracle rate) pass the median the quoted price was computed from.
+
+The RAM payment actions move the RAM cost of a listing's table row onto the payer; the row itself is unchanged. Any account may pay, signing as the payer; no authority over the listing is needed. Marketplaces run them to sponsor their sellers' RAM.
+
+```ts
+const actions = builder.paysaleram('payeracct111', '42');
+const auctionRam = builder.payauctram('payeracct111', '42');
+const buyofferRam = builder.paybuyoram('payeracct111', '7');
+```
+
+## What's new in 2.1.0
+
+- Sale lifecycle actions on `MarketActionBuilder` and `MarketActionGenerator`: `announcesale`, `cancelsale`, `assertsale`, and `purchasesale`.
+- RAM payment actions: `paysaleram`, `payauctram`, and `paybuyoram`.
+- `getSalesV2` and `countSalesV2` for the `/v2/sales` route.
+- `countOffers`, with `MarketOfferApiParams` widening `state` to comma-joined multi-state filters, and now shared by `getOffers`.
 
 ## What's new in 2.0.0
 
