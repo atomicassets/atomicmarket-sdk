@@ -1,7 +1,7 @@
-import { AssetsApiParams, ILog, OfferApiParams, TransferApiParams } from '@atomichub/atomicassets';
+import { AssetsApiParams, ILog, TransferApiParams } from '@atomichub/atomicassets';
 
 import ApiError from '../../Errors/ApiError';
-import { AuctionApiParams, BaseAssetFilterParams, BuyofferApiParams, SaleApiParams } from './Params';
+import { AuctionApiParams, BaseAssetFilterParams, BuyofferApiParams, MarketOfferApiParams, SaleApiParams } from './Params';
 import { IAuction, IBuyoffer, IMarketAsset, IMarketConfig, IMarketOffer, IMarketplace, IMarketToken, IMarketTransfer, IPriceStats, IRoyaltyAttributeRule, IRoyaltyConfig, IRoyaltyTemplateRule, ISale } from './Objects';
 
 type Fetch = typeof fetch;
@@ -54,6 +54,16 @@ export default class AtomicMarketApi {
 
     async getSaleLogs(id: string, page: number = 1, limit: number = 100, order: string = 'desc'): Promise<ILog[]> {
         return await this.fetchEndpoint('/v1/sales/' + id + '/logs', {page, limit, order});
+    }
+
+    // The /v2/sales route is the API's newer materialized sales index. Its row
+    // shape is identical to /v1/sales, so both return ISale rows.
+    async getSalesV2(options: SaleApiParams = {}, page: number = 1, limit: number = 100, data: DataOptions = []): Promise<ISale[]> {
+        return await this.fetchEndpoint('/v2/sales', {page, limit, ...buildDataOptions(options, data)});
+    }
+
+    async countSalesV2(options: SaleApiParams, data: DataOptions = []): Promise<number> {
+        return await this.countEndpoint('/v2/sales', buildDataOptions(options, data));
     }
 
     async getAuctions(options: AuctionApiParams = {}, page: number = 1, limit: number = 100, data: DataOptions = []): Promise<IAuction[]> {
@@ -162,8 +172,12 @@ export default class AtomicMarketApi {
         return await this.fetchEndpoint('/v1/transfers', {page, limit, ...options});
     }
 
-    async getOffers(options: OfferApiParams = {}, page: number = 1, limit: number = 100): Promise<IMarketOffer[]> {
+    async getOffers(options: MarketOfferApiParams = {}, page: number = 1, limit: number = 100): Promise<IMarketOffer[]> {
         return await this.fetchEndpoint('/v1/offers', {page, limit, ...options});
+    }
+
+    async countOffers(options: MarketOfferApiParams): Promise<number> {
+        return await this.countEndpoint('/v1/offers', options);
     }
 
     async getOffer(id: string): Promise<IMarketOffer> {

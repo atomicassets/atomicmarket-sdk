@@ -1,4 +1,4 @@
-import { AssetFilterParams, DateBoundaryParams, OrderParam, PrimaryBoundaryParams } from '@atomichub/atomicassets';
+import { AssetFilterParams, DateBoundaryParams, OfferApiParams, OfferState, OrderParam, PrimaryBoundaryParams } from '@atomichub/atomicassets';
 
 import { AuctionSort, AuctionState, BuyofferSort, BuyofferState, SaleSort, SaleState } from './Enums';
 
@@ -50,3 +50,10 @@ export interface BuyofferApiParams extends ListingFilterParams, AssetFilterParam
     order?: OrderParam;
     [key: string]: any;
 }
+
+// The atomicassets package pins OfferApiParams.state to the OfferState enum;
+// widened here to admit comma-joined multi-state filters, matching how the
+// sale, auction, and buyoffer params above widen their `state`. It also
+// carries the same `[key: string]: any` index signature as those three, so
+// getOffers and countOffers share one filter surface.
+export type MarketOfferApiParams = Omit<OfferApiParams, 'state'> & { state?: OfferState | string, [key: string]: any };

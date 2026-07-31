@@ -1,6 +1,6 @@
 {
   "name": "@atomichub/atomicmarket",
-  "description": "JavaScript/TypeScript SDK for the AtomicMarket NFT marketplace contract on Antelope chains: read sales, auctions, and royalties, and build v2 royalty actions",
+  "description": "JavaScript/TypeScript SDK for the AtomicMarket NFT marketplace contract on Antelope chains: read sales, auctions, and royalties, and build sale, RAM-payment, and v2 royalty actions",
   "keywords": [
     "atomicmarket",
     "atomicassets",
@@ -22,7 +22,7 @@
     "url": "git+https://github.com/atomicassets/atomicmarket-sdk.git"
   },
   "license": "MIT",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "engines": {
     "node": ">=20"
   },
