@@ -339,6 +339,57 @@ describe('MarketActionBuilder sale and RAM-payment actions', () => {
     });
 });
 
+describe('MarketActionBuilder marketplace and balance actions', () => {
+    const contract = 'atomicmarket';
+    const builder = new MarketActionBuilder(contract);
+    const generator = new MarketActionGenerator(contract);
+    const authorization: EosioAuthorizationObject[] = [{actor: 'alice', permission: 'active'}];
+
+    it('regmarket emits creator and marketplace_name', () => {
+        const actions = builder.regmarket('alice', 'mymarketacct');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'regmarket',
+            data: {
+                creator: 'alice',
+                marketplace_name: 'mymarketacct'
+            }
+        }]);
+    });
+
+    it('withdraw emits owner and token_to_withdraw as a chain-notation asset string', () => {
+        const actions = builder.withdraw('alice', '1.00000000 WAX');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'withdraw',
+            data: {
+                owner: 'alice',
+                token_to_withdraw: '1.00000000 WAX'
+            }
+        }]);
+    });
+
+    it('the builder emits no authorization and the generator emits the builder payload plus the passed authorization', async () => {
+        const cases: Array<[EosioActionData[], EosioActionObject[]]> = [
+            [
+                builder.regmarket('alice', 'mymarketacct'),
+                await generator.regmarket(authorization, 'alice', 'mymarketacct')
+            ],
+            [
+                builder.withdraw('alice', '1.00000000 WAX'),
+                await generator.withdraw(authorization, 'alice', '1.00000000 WAX')
+            ]
+        ];
+
+        for (const [sync, generated] of cases) {
+            expect(sync[0]).to.not.have.property('authorization');
+            expect(generated).to.deep.equal(sync.map((action) => ({...action, authorization})));
+        }
+    });
+});
+
 describe('AtomicMarketActions action-name constants', () => {
     it('every entry maps an action name to itself', () => {
         for (const [key, value] of Object.entries(AtomicMarketActions)) {

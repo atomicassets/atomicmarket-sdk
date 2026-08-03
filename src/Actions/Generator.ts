@@ -84,16 +84,17 @@ export type RoyaltyConfigInput = {
 // setattrroy value is an on-chain variant pair `[type, value]`, passed verbatim.
 export type AttributeRoyaltyValue = [string, unknown];
 
-// Sync builders for the AtomicMarket v2 royalty-config, sale-lifecycle, and
-// RAM-payment actions, returning authorization-free {account, name, data}
-// objects. None of these actions carry an `authorized_*` field in `data`. The
-// signer is implicit in the transaction authorization, and adding one is not
-// in the ABI and throws on encode. Numeric coercion rules follow the ABI:
-// uint8/uint32/int32 fields go through Number(), while uint64 fields (rule_id,
-// the listing ids, intended_delphi_median) are forwarded as strings because
-// Number() corrupts values above 2^53 and eosio serializers accept string
-// uint64s. `asset` and `symbol` fields are chain-notation strings
-// ("1.00000000 WAX", "8,WAX"), passed verbatim.
+// Sync builders for the AtomicMarket v2 royalty-config, sale-lifecycle,
+// RAM-payment, marketplace-registration, and balance-withdrawal actions,
+// returning authorization-free {account, name, data} objects. None of
+// these actions carry an `authorized_*` field in `data`. The signer is
+// implicit in the transaction authorization, and adding one is not in the
+// ABI and throws on encode. Numeric coercion rules follow the ABI:
+// uint8/uint32/int32 fields go through Number(), while uint64 fields
+// (rule_id, the listing ids, intended_delphi_median) are forwarded as
+// strings because Number() corrupts values above 2^53 and eosio
+// serializers accept string uint64s. `asset` and `symbol` fields are
+// chain-notation strings ("1.00000000 WAX", "8,WAX"), passed verbatim.
 export class MarketActionBuilder {
     constructor(readonly contract: string) {
     }
@@ -202,6 +203,17 @@ export class MarketActionBuilder {
         return this._pack('paybuyoram', {payer, buyoffer_id});
     }
 
+    // regmarket registers a marketplace name for use in the sale/auction
+    // actions' *_marketplace fields; withdraw returns balance tokens to
+    // their owner. Both require only the named account's own authority.
+    regmarket(creator: string, marketplace_name: string): EosioActionData[] {
+        return this._pack('regmarket', {creator, marketplace_name});
+    }
+
+    withdraw(owner: string, token_to_withdraw: string): EosioActionData[] {
+        return this._pack('withdraw', {owner, token_to_withdraw});
+    }
+
     protected _pairs(recipients: RoyaltyRecipientInput[]): RoyaltyPair[] {
         return recipients.map(({recipient, weight}) => ({recipient, weight: Number(weight)}));
     }
@@ -302,6 +314,18 @@ export class MarketActionGenerator {
         authorization: EosioAuthorizationObject[], payer: string, buyoffer_id: string
     ): Promise<EosioActionObject[]> {
         return this._authorize(authorization, this.builder.paybuyoram(payer, buyoffer_id));
+    }
+
+    async regmarket(
+        authorization: EosioAuthorizationObject[], creator: string, marketplace_name: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.regmarket(creator, marketplace_name));
+    }
+
+    async withdraw(
+        authorization: EosioAuthorizationObject[], owner: string, token_to_withdraw: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.withdraw(owner, token_to_withdraw));
     }
 
     protected _authorize(authorization: EosioAuthorizationObject[], actions: EosioActionData[]): EosioActionObject[] {
