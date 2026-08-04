@@ -272,6 +272,10 @@ Amounts on the wire are raw integers in their symbol's smallest unit, and the de
 
 Almost nothing, deliberately. These are composition helpers over values you already trust: they emit what you hand them, and checking a sale you read from an API is your side of that line. Two exceptions exist because their failure is a wrong payment rather than a rejected transaction: the missing `settlement_quantity` above, and the delphi utilities rejecting a non-positive median or a precision outside the 0 to 18 the chain allows, naming the field in the error. Bound anything else you read from a response before you trust it.
 
+## What's new in 2.2.1
+
+- The Explorer client percent-encodes caller-supplied path ids and custom data-filter keys, so a value carrying `/`, `?`, `#`, `&`, or `=` can no longer reshape the request.
+
 ## What's new in 2.2.0
 
 - `purchaseSaleActions` and `announceSaleActions` on `MarketActionBuilder` and `MarketActionGenerator`, composing the purchase triple and the listing pair.
