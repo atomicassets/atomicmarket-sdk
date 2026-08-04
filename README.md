@@ -146,30 +146,9 @@ import { MarketActionBuilder } from '@atomichub/atomicmarket';
 
 const builder = new MarketActionBuilder('atomicmarket');
 
-// List an asset for sale
-const announce = builder.announcesale(
-    'selleracct11',
-    ['1099511627776'],
-    '100.00000000 WAX',
-    '8,WAX',
-    '' // maker_marketplace: '' for none, or your registered marketplace account
-);
-
-// Buy a sale: assert what you expect to buy, then purchase
-const buy = [
-    ...builder.assertsale('42', ['1099511627776'], '100.00000000 WAX', '8,WAX'),
-    ...builder.purchasesale('buyeracct111', '42', '0', '') // taker_marketplace: '' for none, or your registered marketplace account
-];
-
 // Take a listing down
 const cancel = builder.cancelsale('42');
 ```
-
-Announcing alone lists nothing; the same transaction must also offer the assets to the market contract via AtomicAssets' `createoffer` action with memo `'sale'`.
-
-A complete purchase is one transaction of three actions in order: assertsale, then a transfer to the market contract with memo `deposit` from the settlement token's own contract (`IMarketToken.token_contract`), then purchasesale. Token transfers are not AtomicMarket actions, so bring that action from your signing library or token tooling.
-
-`intended_delphi_median` is `'0'` for a sale listed directly in its settlement token. For sales priced through the Delphi oracle (listed in one currency, settled in another at the oracle rate) pass the median the quoted price was computed from.
 
 The RAM payment actions move the RAM cost of a listing's table row onto the payer; the row itself is unchanged. Any account may pay, signing as the payer; no authority over the listing is needed. Marketplaces run them to sponsor their sellers' RAM.
 
@@ -178,6 +157,126 @@ const actions = builder.paysaleram('payeracct111', '42');
 const auctionRam = builder.payauctram('payeracct111', '42');
 const buyofferRam = builder.paybuyoram('payeracct111', '7');
 ```
+
+Listing an asset and buying one are not single actions, though, and in both cases the action order, the memo literals, and which contract each action belongs to are rules of the contracts rather than choices. Those two flows come as composed helpers, so that knowledge lives here instead of in every integration. The actions they compose stay on the builder as well, for anything that needs to assemble its own transaction shape.
+
+### Listing an asset
+
+`announceSaleActions` returns the pair a listing takes: `announcesale` on the market contract, then AtomicAssets' `createoffer` handing the assets over to it with memo `'sale'`.
+
+```ts
+const listing = builder.announceSaleActions({
+    seller: 'selleracct11',
+    asset_ids: ['1099511627776'],
+    listing_price: '100.00000000 WAX',
+    settlement_symbol: '8,WAX',
+    maker_marketplace: '', // '' for none, or your registered marketplace account
+    assets_contract: 'atomicassets'
+});
+```
+
+Announcing alone lists nothing and offering alone leaves the assets in an offer nobody accepts, so the two belong in one transaction.
+
+### Buying a sale
+
+`purchaseSaleActions` returns the purchase triple in the one order the contract accepts: `assertsale` pinning the terms you expect to buy, a transfer with memo `deposit` crediting the market contract, then `purchasesale` spending that credit.
+
+```ts
+const purchase = builder.purchaseSaleActions({
+    buyer: 'buyeracct111',
+    sale_id: '42',
+    asset_ids: ['1099511627776'],
+    listing_price: '100.00000000 WAX',
+    settlement_symbol: '8,WAX',
+    intended_delphi_median: '0',
+    token_contract: 'eosio.token', // the settlement token's own contract, from IMarketToken.token_contract
+    taker_marketplace: '' // '' for none, or your registered marketplace account
+});
+```
+
+The deposit is a token transfer rather than an AtomicMarket action, which is why the helper needs `token_contract`. `assertsale` is what makes the triple safe to sign: if the sale changed between reading it and the transaction landing, the assertion fails and nothing moves.
+
+`intended_delphi_median` is `'0'` for a sale listed directly in its settlement token, and that is the whole story for most sales.
+
+### Delphi-priced sales
+
+A sale can be listed in one currency and settled in another at the delphioracle rate, which is what a non-zero `intended_delphi_median` means. Its two price fields then describe two different symbols: `listing_price` is what the seller asked in the listing currency, and the buyer deposits what that converts to at the median. `assertsale` pins the listing terms only, so no on-chain check stands behind the deposit amount, which makes deriving it the step worth getting right.
+
+`getConfig` carries the pair, `deriveSettlementAmount` converts, and `formatQuantity` renders the result as the quantity string the transfer takes:
+
+```ts
+import { deriveSettlementAmount, formatQuantity, marketApiForNetwork } from '@atomichub/atomicmarket';
+
+const api = marketApiForNetwork('wax');
+const sale = await api.getSale('42');
+const config = await api.getConfig();
+
+const pair = config.supported_pairs.find(
+    (candidate) => candidate.listing_symbol === sale.listing_symbol
+        && candidate.settlement_symbol === sale.price.token_symbol
+);
+
+if (!pair || !sale.price.median) {
+    throw new Error(`sale ${sale.sale_id} is not a delphi sale this pair set covers`);
+}
+
+// Bound what the API served before converting it. A median past 2^53 has
+// already lost precision at JSON parse, and a non-integer listing_price
+// would surface as an opaque BigInt error instead of a named one.
+if (!Number.isSafeInteger(sale.price.median) || sale.price.median <= 0) {
+    throw new Error(`sale ${sale.sale_id}: median ${sale.price.median} is not a positive safe integer`);
+}
+
+if (!/^\d+$/.test(sale.listing_price)) {
+    throw new Error(`sale ${sale.sale_id}: listing_price ${sale.listing_price} is not a raw integer amount`);
+}
+
+// The listing symbol sits on one side of the price feed or the other, and
+// takes that side's precision.
+const listingPrecision = sale.listing_symbol === pair.data.base_symbol
+    ? pair.data.base_precision
+    : pair.data.quote_precision;
+
+const settlement = deriveSettlementAmount(BigInt(sale.listing_price), BigInt(sale.price.median), {
+    median_precision: pair.data.median_precision,
+    base_precision: pair.data.base_precision,
+    quote_precision: pair.data.quote_precision,
+    invert_delphi_pair: pair.invert_delphi_pair
+});
+
+// Whoever serves getConfig also controls the numbers deriveSettlementAmount
+// works from, so the amount it derives and the amount this same response
+// separately reports must agree before either is trusted.
+if (!/^\d+$/.test(sale.price.amount) || BigInt(sale.price.amount) !== settlement) {
+    throw new Error(`sale ${sale.sale_id}: price.amount ${sale.price.amount} does not match the median-derived expectation ${settlement.toString()} for listing_price ${sale.listing_price} ${sale.listing_symbol} at median ${sale.price.median}`);
+}
+
+const purchase = builder.purchaseSaleActions({
+    buyer: 'buyeracct111',
+    sale_id: sale.sale_id,
+    asset_ids: sale.assets.map((asset) => asset.asset_id),
+    listing_price: formatQuantity(BigInt(sale.listing_price), listingPrecision, sale.listing_symbol),
+    settlement_symbol: `${sale.price.token_precision},${sale.price.token_symbol}`,
+    settlement_quantity: formatQuantity(settlement, sale.price.token_precision, sale.price.token_symbol),
+    intended_delphi_median: String(sale.price.median),
+    token_contract: sale.price.token_contract,
+    taker_marketplace: ''
+});
+```
+
+Amounts on the wire are raw integers in their symbol's smallest unit, and the derivation stays in `BigInt` with a single floor, so it lands on the same integer the contract's own conversion produces rather than a value that drifts by a unit at large magnitudes. `invert_delphi_pair` says which way the underlying price feed is oriented, and it is the reason the listing precision is read off the matching side of the feed rather than assumed.
+
+`settlement_quantity` is required whenever `intended_delphi_median` is not `'0'`. Without it the helper would deposit the listing price, which on a delphi sale is an amount in the wrong currency, so it throws instead.
+
+### What the builders validate
+
+Almost nothing, deliberately. These are composition helpers over values you already trust: they emit what you hand them, and checking a sale you read from an API is your side of that line. Two exceptions exist because their failure is a wrong payment rather than a rejected transaction: the missing `settlement_quantity` above, and the delphi utilities rejecting a non-positive median or a precision outside the 0 to 18 the chain allows, naming the field in the error. Bound anything else you read from a response before you trust it.
+
+## What's new in 2.2.0
+
+- `purchaseSaleActions` and `announceSaleActions` on `MarketActionBuilder` and `MarketActionGenerator`, composing the purchase triple and the listing pair.
+- `deriveSettlementAmount` and `formatQuantity` for delphi-priced sales, with `DelphiPairSpec` projecting a supported pair from `getConfig`.
+- `IMarketPair.data.quote_precision` is typed `number` rather than the literal `2`, so a pair reads straight into a `DelphiPairSpec`.
 
 ## What's new in 2.1.0
 

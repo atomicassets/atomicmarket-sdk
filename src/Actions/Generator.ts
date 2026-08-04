@@ -1,4 +1,5 @@
 import type { EosioActionObject, EosioAuthorizationObject } from '@atomichub/atomicassets';
+import { ActionBuilder } from '@atomichub/atomicassets';
 
 // Single source of truth for the eosio action shapes is the atomicassets SDK;
 // re-exported here so consumers of this package alone keep the same names.
@@ -83,6 +84,37 @@ export type RoyaltyConfigInput = {
 
 // setattrroy value is an on-chain variant pair `[type, value]`, passed verbatim.
 export type AttributeRoyaltyValue = [string, unknown];
+
+// Everything the purchase triple needs. uint64-shaped fields (sale_id, the
+// asset_ids entries, intended_delphi_median) are verbatim strings per this
+// package's numeric policy; listing_price and settlement_quantity are chain
+// quantity strings and settlement_symbol is chain symbol notation.
+export type PurchaseSaleInput = {
+    buyer: string,
+    sale_id: string,
+    asset_ids: string[],
+    listing_price: string,
+    settlement_symbol: string,
+    intended_delphi_median: string,
+    // Required whenever intended_delphi_median is not '0': a delphi sale lists
+    // in one symbol and settles in another, so the deposit cannot reuse
+    // listing_price. Omit it for a plain sale, where the two are the same
+    // quantity by contract rule.
+    settlement_quantity?: string,
+    token_contract: string,
+    taker_marketplace: string
+};
+
+// Everything the listing pair needs. assets_contract is the AtomicAssets
+// contract the offered assets live on ('atomicassets' on every current chain).
+export type AnnounceSaleInput = {
+    seller: string,
+    asset_ids: string[],
+    listing_price: string,
+    settlement_symbol: string,
+    maker_marketplace: string,
+    assets_contract: string
+};
 
 // Sync builders for the AtomicMarket v2 royalty-config, sale-lifecycle,
 // RAM-payment, marketplace-registration, and balance-withdrawal actions,
@@ -214,6 +246,56 @@ export class MarketActionBuilder {
         return this._pack('withdraw', {owner, token_to_withdraw});
     }
 
+    // Neither a purchase nor a listing is a single action, and each one's
+    // action order, memo literals, and owning contract are contract rules
+    // rather than caller preferences. The two helpers below compose them so
+    // that knowledge lives here instead of in every integration.
+
+    // The purchase triple, in the one order the contract accepts: assert the
+    // terms being bought, deposit the settlement quantity into the market
+    // contract's balance, then purchase against that balance. The transfer
+    // belongs to the settlement token's own contract, not to AtomicMarket.
+    purchaseSaleActions(input: PurchaseSaleInput): EosioActionData[] {
+        // The helper's only guard. A delphi sale lists in one symbol and
+        // settles in another, so falling back to listing_price would deposit
+        // an amount in the wrong currency, and no on-chain assert catches it.
+        if (input.intended_delphi_median !== '0' && input.settlement_quantity === undefined) {
+            throw new Error(
+                'settlement_quantity is required when intended_delphi_median is not "0": '
+                + 'a delphi sale settles in a different symbol than it lists in'
+            );
+        }
+
+        return [
+            ...this.assertsale(input.sale_id, input.asset_ids, input.listing_price, input.settlement_symbol),
+            {
+                account: input.token_contract,
+                name: 'transfer',
+                data: {
+                    from: input.buyer,
+                    to: this.contract,
+                    quantity: input.settlement_quantity ?? input.listing_price,
+                    memo: 'deposit'
+                }
+            },
+            ...this.purchasesale(input.buyer, input.sale_id, input.intended_delphi_median, input.taker_marketplace)
+        ];
+    }
+
+    // The listing pair. Announcing alone lists nothing and offering alone
+    // dangles, so the two belong in one transaction; the offer is an
+    // AtomicAssets action, built by that contract's own builder.
+    announceSaleActions(input: AnnounceSaleInput): EosioActionData[] {
+        return [
+            ...this.announcesale(
+                input.seller, input.asset_ids, input.listing_price, input.settlement_symbol, input.maker_marketplace
+            ),
+            new ActionBuilder(input.assets_contract).createoffer(
+                input.seller, this.contract, input.asset_ids, [], 'sale'
+            )
+        ];
+    }
+
     protected _pairs(recipients: RoyaltyRecipientInput[]): RoyaltyPair[] {
         return recipients.map(({recipient, weight}) => ({recipient, weight: Number(weight)}));
     }
@@ -326,6 +408,18 @@ export class MarketActionGenerator {
         authorization: EosioAuthorizationObject[], owner: string, token_to_withdraw: string
     ): Promise<EosioActionObject[]> {
         return this._authorize(authorization, this.builder.withdraw(owner, token_to_withdraw));
+    }
+
+    async purchaseSaleActions(
+        authorization: EosioAuthorizationObject[], input: PurchaseSaleInput
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.purchaseSaleActions(input));
+    }
+
+    async announceSaleActions(
+        authorization: EosioAuthorizationObject[], input: AnnounceSaleInput
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.announceSaleActions(input));
     }
 
     protected _authorize(authorization: EosioAuthorizationObject[], actions: EosioActionData[]): EosioActionObject[] {
