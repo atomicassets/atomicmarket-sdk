@@ -22,7 +22,7 @@
     "url": "git+https://github.com/atomicassets/atomicmarket-sdk.git"
   },
   "license": "MIT",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "engines": {
     "node": ">=20"
   },
