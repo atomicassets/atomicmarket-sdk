@@ -62,3 +62,35 @@ describe('AtomicMarketApi offers count and v2 sales endpoints', () => {
         }
     });
 });
+
+describe('AtomicMarketApi URL encoding of caller-supplied input', () => {
+    // An id carrying '/' walks the request to a different route, and one
+    // carrying '?' or '#' grafts a query string or fragment onto it.
+    const hostileId = '1/2 ?&#x';
+    const encodedId = '1%2F2%20%3F%26%23x';
+
+    it('percent-encodes a hostile id so it stays one path segment', async () => {
+        const calls: FetchCall[] = [];
+        const api = mockApi(() => ({status: 200, body: {success: true, data: {}}}), calls);
+
+        await api.getSale(hostileId);
+        await api.getSaleLogs(hostileId);
+
+        expect(calls[0].url).to.equal('https://test.api/atomicmarket/v1/sales/' + encodedId);
+        expect(calls[1].url).to.equal('https://test.api/atomicmarket/v1/sales/' + encodedId + '/logs?page=1&limit=100&order=desc');
+    });
+
+    it('percent-encodes custom data-filter keys, not only their values', async () => {
+        const calls: FetchCall[] = [];
+        const api = mockApi(() => ({status: 200, body: {success: true, data: []}}), calls);
+
+        // A DataOptions row.key reaches the query key side, where a bare '&'
+        // or '=' would split into filters the caller never asked for. The
+        // numeric row also covers the ':' the type prefix adds.
+        await api.getSalesV2({}, 1, 100, [{key: 'a&b=c', value: 'rare'}, {key: 'x&y', value: 5}]);
+
+        expect(calls[0].url).to.equal(
+            'https://test.api/atomicmarket/v2/sales?page=1&limit=100&data.a%26b%3Dc=rare&data%3Anumber.x%26y=5'
+        );
+    });
+});

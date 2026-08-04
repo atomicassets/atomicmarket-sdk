@@ -49,11 +49,11 @@ export default class AtomicMarketApi {
     }
 
     async getSale(id: string): Promise<ISale> {
-        return await this.fetchEndpoint('/v1/sales/' + id, {});
+        return await this.fetchEndpoint('/v1/sales/' + encodeURIComponent(id), {});
     }
 
     async getSaleLogs(id: string, page: number = 1, limit: number = 100, order: string = 'desc'): Promise<ILog[]> {
-        return await this.fetchEndpoint('/v1/sales/' + id + '/logs', {page, limit, order});
+        return await this.fetchEndpoint('/v1/sales/' + encodeURIComponent(id) + '/logs', {page, limit, order});
     }
 
     // The /v2/sales route is the API's newer materialized sales index. Its row
@@ -75,11 +75,11 @@ export default class AtomicMarketApi {
     }
 
     async getAuction(id: string): Promise<IAuction> {
-        return await this.fetchEndpoint('/v1/auctions/' + id, {});
+        return await this.fetchEndpoint('/v1/auctions/' + encodeURIComponent(id), {});
     }
 
     async getAuctionLogs(id: string, page: number = 1, limit: number = 100, order: string = 'desc'): Promise<ILog[]> {
-        return await this.fetchEndpoint('/v1/auctions/' + id + '/logs', {page, limit, order});
+        return await this.fetchEndpoint('/v1/auctions/' + encodeURIComponent(id) + '/logs', {page, limit, order});
     }
 
     async getBuyoffers(options: BuyofferApiParams = {}, page: number = 1, limit: number = 100, data: DataOptions = []): Promise<IBuyoffer[]> {
@@ -91,11 +91,11 @@ export default class AtomicMarketApi {
     }
 
     async getBuyoffer(id: string): Promise<IBuyoffer> {
-        return await this.fetchEndpoint('/v1/buyoffers/' + id, {});
+        return await this.fetchEndpoint('/v1/buyoffers/' + encodeURIComponent(id), {});
     }
 
     async getBuyofferLogs(id: string, page: number = 1, limit: number = 100, order: string = 'desc'): Promise<ILog[]> {
-        return await this.fetchEndpoint('/v1/buyoffers/' + id + '/logs', {page, limit, order});
+        return await this.fetchEndpoint('/v1/buyoffers/' + encodeURIComponent(id) + '/logs', {page, limit, order});
     }
 
     async getMarketplaces(): Promise<IMarketplace[]> {
@@ -103,7 +103,7 @@ export default class AtomicMarketApi {
     }
 
     async getMarketplace(name: string): Promise<IMarketplace> {
-        return await this.fetchEndpoint('/v1/marketplaces/' + name, {});
+        return await this.fetchEndpoint('/v1/marketplaces/' + encodeURIComponent(name), {});
     }
 
     async getConfig(): Promise<IMarketConfig> {
@@ -116,7 +116,7 @@ export default class AtomicMarketApi {
     // the normal "no config" case, mapped to null here, never an error.
     async getRoyaltyConfig(collection: string): Promise<IRoyaltyConfig | null> {
         try {
-            return await this.fetchEndpoint('/v1/royalties/' + collection, {});
+            return await this.fetchEndpoint('/v1/royalties/' + encodeURIComponent(collection), {});
         } catch (error) {
             if (error instanceof ApiError && error.status === 416) {
                 return null;
@@ -127,11 +127,11 @@ export default class AtomicMarketApi {
     }
 
     async getRoyaltyTemplateRules(collection: string, page: number = 1, limit: number = 100): Promise<IRoyaltyTemplateRule[]> {
-        return await this.fetchEndpoint('/v1/royalties/' + collection + '/templates', {page, limit});
+        return await this.fetchEndpoint('/v1/royalties/' + encodeURIComponent(collection) + '/templates', {page, limit});
     }
 
     async getRoyaltyAttributeRules(collection: string, page: number = 1, limit: number = 100): Promise<IRoyaltyAttributeRule[]> {
-        return await this.fetchEndpoint('/v1/royalties/' + collection + '/attributes', {page, limit});
+        return await this.fetchEndpoint('/v1/royalties/' + encodeURIComponent(collection) + '/attributes', {page, limit});
     }
 
     /* PRICE API */
@@ -165,7 +165,7 @@ export default class AtomicMarketApi {
     }
 
     async getAsset(id: string): Promise<IMarketAsset> {
-        return await this.fetchEndpoint('/v1/assets/' + id, {});
+        return await this.fetchEndpoint('/v1/assets/' + encodeURIComponent(id), {});
     }
 
     async getTransfers(options: TransferApiParams = {}, page: number = 1, limit: number = 100): Promise<IMarketTransfer[]> {
@@ -181,7 +181,7 @@ export default class AtomicMarketApi {
     }
 
     async getOffer(id: string): Promise<IMarketOffer> {
-        return await this.fetchEndpoint('/v1/offers/' + id, {});
+        return await this.fetchEndpoint('/v1/offers/' + encodeURIComponent(id), {});
     }
 
     async fetchEndpoint<T>(path: string, args: any): Promise<T> {
@@ -199,7 +199,7 @@ export default class AtomicMarketApi {
                 value = 'false';
             }
 
-            return key + '=' + encodeURIComponent(value);
+            return encodeURIComponent(key) + '=' + encodeURIComponent(value);
         }).join('&');
 
         try {

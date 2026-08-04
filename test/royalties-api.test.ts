@@ -65,4 +65,13 @@ describe('AtomicMarketApi royalty read endpoints', () => {
         expect(calls[0].url).to.equal('https://test.api/atomicmarket/v1/royalties/mycollection/templates?page=2&limit=50');
         expect(calls[1].url).to.equal('https://test.api/atomicmarket/v1/royalties/mycollection/attributes?page=1&limit=100');
     });
+
+    it('percent-encodes a hostile collection without swallowing the /templates suffix', async () => {
+        const calls: FetchCall[] = [];
+        const api = mockApi(() => ({status: 200, body: {success: true, data: []}}), calls);
+
+        await api.getRoyaltyTemplateRules('1/2 ?&#x', 2, 50);
+
+        expect(calls[0].url).to.equal('https://test.api/atomicmarket/v1/royalties/1%2F2%20%3F%26%23x/templates?page=2&limit=50');
+    });
 });
