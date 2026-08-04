@@ -4,14 +4,19 @@ import ApiError from './Errors/ApiError';
 
 export { AtomicMarketApi, MarketActionBuilder, MarketActionGenerator, ApiError };
 
-// Royalty action-builder argument and output shapes, plus the contract's
-// action-name constants. EosioActionObject/EosioAuthorizationObject are
-// re-exports of the @atomichub/atomicassets types.
+// Action-builder argument and output shapes, plus the contract's action-name
+// constants. EosioActionObject/EosioAuthorizationObject are re-exports of the
+// @atomichub/atomicassets types.
 export {
-    AtomicMarketActionName, AtomicMarketActions, AttributeRoyaltyValue,
-    EosioActionData, EosioActionObject, EosioAuthorizationObject,
+    AnnounceSaleInput, AtomicMarketActionName, AtomicMarketActions, AttributeRoyaltyValue,
+    EosioActionData, EosioActionObject, EosioAuthorizationObject, PurchaseSaleInput,
     RoyaltyConfigInput, RoyaltyPair, RoyaltyRecipientInput
 } from './Actions/Generator';
+
+// Settlement math for delphi-priced sales: the deposit amount a purchase
+// transfers is derived, not read off the sale, and nothing on chain asserts it.
+export type { DelphiPairSpec } from './Actions/Delphi';
+export { deriveSettlementAmount, formatQuantity } from './Actions/Delphi';
 
 // AtomicHub public endpoint presets (re-exported from @atomichub/atomicassets)
 // and the preconfigured market client factory.

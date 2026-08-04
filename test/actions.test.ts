@@ -1,9 +1,38 @@
 import { expect } from 'chai';
 
 import {
-    AtomicMarketActions, EosioActionData, EosioActionObject, EosioAuthorizationObject,
-    MarketActionBuilder, MarketActionGenerator
+    AnnounceSaleInput, AtomicMarketActions, EosioActionData, EosioActionObject, EosioAuthorizationObject,
+    MarketActionBuilder, MarketActionGenerator, PurchaseSaleInput
 } from '../src';
+
+const plainSale: PurchaseSaleInput = {
+    buyer: 'buyeracct111',
+    sale_id: '42',
+    asset_ids: ['1099511627776', '1099511627777'],
+    listing_price: '100.00000000 WAX',
+    settlement_symbol: '8,WAX',
+    intended_delphi_median: '0',
+    token_contract: 'eosio.token',
+    taker_marketplace: 'mymarketacct'
+};
+
+// A delphi sale lists in USD and settles in WAX at the oracle median, so its
+// deposit quantity is derived rather than equal to the listing price.
+const delphiSale: PurchaseSaleInput = {
+    ...plainSale,
+    listing_price: '1.00 USD',
+    intended_delphi_median: '401',
+    settlement_quantity: '24.93765586 WAX'
+};
+
+const listing: AnnounceSaleInput = {
+    seller: 'selleracct11',
+    asset_ids: ['1099511627776', '1099511627777'],
+    listing_price: '100.00000000 WAX',
+    settlement_symbol: '8,WAX',
+    maker_marketplace: 'mymarketacct',
+    assets_contract: 'atomicassets'
+};
 
 describe('MarketActionGenerator royalty action helpers', () => {
     const contract = 'atomicmarket';
@@ -310,6 +339,14 @@ describe('MarketActionBuilder sale and RAM-payment actions', () => {
                 builder.announcesale('alice', ['1'], '1.00000000 WAX', '8,WAX', '.'),
                 await generator.announcesale(authorization, 'alice', ['1'], '1.00000000 WAX', '8,WAX', '.')
             ],
+            [
+                builder.purchaseSaleActions(plainSale),
+                await generator.purchaseSaleActions(authorization, plainSale)
+            ],
+            [
+                builder.announceSaleActions(listing),
+                await generator.announceSaleActions(authorization, listing)
+            ],
             [builder.cancelsale('42'), await generator.cancelsale(authorization, '42')],
             [
                 builder.assertsale('42', ['1'], '1.00000000 WAX', '8,WAX'),
@@ -336,6 +373,127 @@ describe('MarketActionBuilder sale and RAM-payment actions', () => {
         expect(builder.cancelsale(max)[0].data.sale_id).to.equal(max);
         expect(builder.purchasesale('bob', max, max, '.')[0].data.sale_id).to.equal(max);
         expect(builder.purchasesale('bob', '42', max, '.')[0].data.intended_delphi_median).to.equal(max);
+    });
+});
+
+describe('MarketActionBuilder composed sale flows', () => {
+    const contract = 'atomicmarket';
+    const builder = new MarketActionBuilder(contract);
+
+    it('purchaseSaleActions emits assertsale, transfer, purchasesale in order, on the market, token and market contracts', () => {
+        const actions = builder.purchaseSaleActions(plainSale);
+
+        expect(actions.map((action) => [action.account, action.name])).to.deep.equal([
+            [contract, 'assertsale'],
+            ['eosio.token', 'transfer'],
+            [contract, 'purchasesale']
+        ]);
+    });
+
+    it('the transfer deposits the listing price into the market contract with memo deposit when no settlement_quantity is given', () => {
+        const [, transfer] = builder.purchaseSaleActions(plainSale);
+
+        expect(transfer).to.deep.equal({
+            account: 'eosio.token',
+            name: 'transfer',
+            data: {
+                from: 'buyeracct111',
+                to: contract,
+                quantity: '100.00000000 WAX',
+                memo: 'deposit'
+            }
+        });
+    });
+
+    it('a supplied settlement_quantity reaches the transfer verbatim and changes no other action', () => {
+        const plain = builder.purchaseSaleActions({...plainSale, listing_price: '1.00 USD'});
+        const delphi = builder.purchaseSaleActions(delphiSale);
+
+        expect(delphi[1].data.quantity).to.equal('24.93765586 WAX');
+        expect(delphi[0]).to.deep.equal(plain[0]);
+        expect(delphi[2].data.intended_delphi_median).to.equal('401');
+        expect({...delphi[2].data, intended_delphi_median: '0'}).to.deep.equal(plain[2].data);
+    });
+
+    it('assertsale carries sale_id unsuffixed and the asserted terms in their *_to_assert fields', () => {
+        const [assertsale] = builder.purchaseSaleActions(plainSale);
+
+        expect(assertsale).to.deep.equal({
+            account: contract,
+            name: 'assertsale',
+            data: {
+                sale_id: '42',
+                asset_ids_to_assert: ['1099511627776', '1099511627777'],
+                listing_price_to_assert: '100.00000000 WAX',
+                settlement_symbol_to_assert: '8,WAX'
+            }
+        });
+    });
+
+    it('purchasesale carries buyer, sale_id, intended_delphi_median and taker_marketplace verbatim', () => {
+        const [, , purchasesale] = builder.purchaseSaleActions(delphiSale);
+
+        expect(purchasesale).to.deep.equal({
+            account: contract,
+            name: 'purchasesale',
+            data: {
+                buyer: 'buyeracct111',
+                sale_id: '42',
+                intended_delphi_median: '401',
+                taker_marketplace: 'mymarketacct'
+            }
+        });
+    });
+
+    it('a delphi median with no settlement_quantity throws, naming settlement_quantity', () => {
+        const withoutQuantity: PurchaseSaleInput = {...plainSale, listing_price: '1.00 USD', intended_delphi_median: '401'};
+
+        expect(() => builder.purchaseSaleActions(withoutQuantity)).to.throw(/settlement_quantity/);
+    });
+
+    it('uint64 values above 2^53 survive verbatim through sale_id, asset_ids and intended_delphi_median', () => {
+        const max = '18446744073709551615';
+        const actions = builder.purchaseSaleActions({
+            ...plainSale,
+            sale_id: max,
+            asset_ids: [max],
+            intended_delphi_median: max,
+            settlement_quantity: '100.00000000 WAX'
+        });
+
+        expect(actions[0].data.sale_id).to.equal(max);
+        expect(actions[0].data.asset_ids_to_assert).to.deep.equal([max]);
+        expect(actions[2].data.sale_id).to.equal(max);
+        expect(actions[2].data.intended_delphi_median).to.equal(max);
+    });
+
+    it('announceSaleActions emits announcesale then the assets contract createoffer of the same assets with memo sale', () => {
+        const actions = builder.announceSaleActions(listing);
+
+        expect(actions).to.deep.equal([
+            {
+                account: contract,
+                name: 'announcesale',
+                data: {
+                    seller: 'selleracct11',
+                    asset_ids: ['1099511627776', '1099511627777'],
+                    listing_price: '100.00000000 WAX',
+                    settlement_symbol: '8,WAX',
+                    maker_marketplace: 'mymarketacct'
+                }
+            },
+            {
+                account: 'atomicassets',
+                name: 'createoffer',
+                data: {
+                    sender: 'selleracct11',
+                    recipient: contract,
+                    sender_asset_ids: ['1099511627776', '1099511627777'],
+                    recipient_asset_ids: [],
+                    memo: 'sale'
+                }
+            }
+        ]);
     });
 });
 

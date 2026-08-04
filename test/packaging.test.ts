@@ -98,6 +98,19 @@ describe('packaging / build-artifact resolution', () => {
         expect(built.SortOrder).to.deep.include({Asc: 'asc', Desc: 'desc'});
     });
 
+    it('the built package exposes the delphi settlement utilities as functions', () => {
+        const built = require('../build/index.cjs');
+
+        expect(built.deriveSettlementAmount).to.be.a('function');
+        expect(built.formatQuantity).to.be.a('function');
+    });
+
+    it('declares exactly one runtime dependency, the sibling atomicassets SDK', () => {
+        const manifest = require('../package.json');
+
+        expect(Object.keys(manifest.dependencies)).to.deep.equal(['@atomichub/atomicassets']);
+    });
+
     it('reads the array-shaped pack report npm 11 and earlier emit', () => {
         const stream = '[\n  {\n    "files": [{"path": "package.json"}],\n    "bundled": []\n  }\n]\n';
 

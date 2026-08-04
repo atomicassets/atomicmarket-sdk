@@ -13,7 +13,7 @@ export interface IMarketPair {
         base_symbol: string,
         base_precision: number,
         quote_symbol: string,
-        quote_precision: 2,
+        quote_precision: number,
         median: number,
         median_precision: number,
         updated_at_time: string,
