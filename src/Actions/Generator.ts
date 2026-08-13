@@ -1,6 +1,8 @@
 import type { EosioActionObject, EosioAuthorizationObject } from '@atomichub/atomicassets';
 import { ActionBuilder } from '@atomichub/atomicassets';
 
+import { namesSameSymbol } from './Symbols';
+
 // Single source of truth for the eosio action shapes is the atomicassets SDK;
 // re-exported here so consumers of this package alone keep the same names.
 export type { EosioActionObject, EosioAuthorizationObject };
@@ -92,23 +94,39 @@ export type AttributeRoyaltyValue = [string, unknown];
 export type PurchaseSaleInput = {
     buyer: string,
     sale_id: string,
+    // Exactly one id on AtomicMarket v2: announcesale rejects a listing of any
+    // other size, so every sale row it writes holds a single asset. A row
+    // holding more is a legacy bundle, and buying one on v2 costs the buyer the
+    // deposit and returns nothing. allow_v1_bundle_sale below is the opt-out
+    // for a chain running v1, where bundles are ordinary listings.
     asset_ids: string[],
     listing_price: string,
     settlement_symbol: string,
     intended_delphi_median: string,
-    // Required whenever intended_delphi_median is not '0': a delphi sale lists
-    // in one symbol and settles in another, so the deposit cannot reuse
-    // listing_price. Omit it for a plain sale, where the two are the same
-    // quantity by contract rule.
+    // Required whenever settlement_symbol is not listing_price's own symbol:
+    // such a sale settles through the oracle, in a symbol the listing price is
+    // not denominated in, so the deposit cannot reuse listing_price. Optional
+    // when the two name one symbol, where the contract settles the listed
+    // quantity itself; supplying it there is fine and common, but it must equal
+    // listing_price exactly.
     settlement_quantity?: string,
     token_contract: string,
-    taker_marketplace: string
+    taker_marketplace: string,
+    // Opt out of the single-asset rule, for a buyer on a chain still running
+    // AtomicMarket v1. Bundle sales are ordinary listings there and purchase
+    // correctly, v1 having neither v2's early return nor its single-asset
+    // check. On v2 the same transaction commits with the buyer paid and nothing
+    // delivered, which is why it is off unless asked for.
+    allow_v1_bundle_sale?: boolean
 };
 
 // Everything the listing pair needs. assets_contract is the AtomicAssets
 // contract the offered assets live on ('atomicassets' on every current chain).
 export type AnnounceSaleInput = {
     seller: string,
+    // One id per listing on v2, where announcesale refuses a bundle outright
+    // and asks for one sale per asset instead; several sales may still be
+    // announced in a single transaction. A chain still on v1 takes bundles.
     asset_ids: string[],
     listing_price: string,
     settlement_symbol: string,
@@ -127,6 +145,12 @@ export type AnnounceSaleInput = {
 // strings because Number() corrupts values above 2^53 and eosio
 // serializers accept string uint64s. `asset` and `symbol` fields are
 // chain-notation strings ("1.00000000 WAX", "8,WAX"), passed verbatim.
+//
+// The six royalty builders address actions v2 introduced. A chain still running
+// v1 carries none of them in its ABI, so a signing library there fails to
+// serialize the data rather than reaching a chain that would refuse it:
+// on-chain royalty configuration is a v2 capability, not something a v1
+// collection can be talked into.
 export class MarketActionBuilder {
     constructor(readonly contract: string) {
     }
@@ -236,8 +260,17 @@ export class MarketActionBuilder {
     }
 
     // regmarket registers a marketplace name for use in the sale/auction
-    // actions' *_marketplace fields; withdraw returns balance tokens to
-    // their owner. Both require only the named account's own authority.
+    // actions' *_marketplace fields; withdraw returns balance tokens to their
+    // owner.
+    //
+    // withdraw needs the owner's own authority and nothing else. regmarket
+    // needs the creator's as its first gate, and then the name itself decides
+    // what else: a marketplace_name that is already an account needs that
+    // account's authorization too, one carrying a suffix needs the suffix's,
+    // and a name that is neither must be exactly 12 characters. So a
+    // marketplace cannot be registered under a name someone else answers to
+    // without them signing for it, and a transaction authorized by the creator
+    // alone still fails on any name that is not 12 characters.
     regmarket(creator: string, marketplace_name: string): EosioActionData[] {
         return this._pack('regmarket', {creator, marketplace_name});
     }
@@ -251,19 +284,99 @@ export class MarketActionBuilder {
     // rather than caller preferences. The two helpers below compose them so
     // that knowledge lives here instead of in every integration.
 
-    // The purchase triple, in the one order the contract accepts: assert the
-    // terms being bought, deposit the settlement quantity into the market
-    // contract's balance, then purchase against that balance. The transfer
-    // belongs to the settlement token's own contract, not to AtomicMarket.
+    // The purchase triple: assert the terms being bought, deposit the
+    // settlement quantity into the market contract's balance, then purchase
+    // against that balance. The transfer belongs to the settlement token's own
+    // contract, not to AtomicMarket.
+    //
+    // Only the purchase's place is fixed. It spends the deposited balance and
+    // erases the sale row assertsale reads, so both of the others must precede
+    // it, while assertsale reads the sales table and writes nothing, leaving it
+    // and the deposit free to swap. This is the order the helper emits rather
+    // than the only order the contract takes.
     purchaseSaleActions(input: PurchaseSaleInput): EosioActionData[] {
-        // The helper's only guard. A delphi sale lists in one symbol and
-        // settles in another, so falling back to listing_price would deposit
-        // an amount in the wrong currency, and no on-chain assert catches it.
-        if (input.intended_delphi_median !== '0' && input.settlement_quantity === undefined) {
+        // The contract's own discriminator: calc_settlement_price returns the
+        // listing price unchanged when the sale's two symbol fields name one
+        // symbol, and converts through the oracle when they do not. It is the
+        // whole symbol that decides, precision included, so a sale listing
+        // '30.00 WAX' against '8,WAX' names two symbols and settles through a
+        // registered pair like any other. Whether that pair is registered is
+        // chain state, and none of these checks are entitled to an opinion
+        // on it.
+        const settlesItsListingSymbol = namesSameSymbol(input.listing_price, input.settlement_symbol);
+
+        // The only caller error found that the chain neither reverts nor
+        // refuses. purchasesale on v2 returns early for a sale row holding more
+        // than one asset id: it declines the offer, erases the row, and returns
+        // before reaching any balance. assertsale has already passed, the ids,
+        // price and symbol all matching the row it is asserting, and the
+        // deposit has already credited the buyer, so the transaction commits
+        // with the buyer paid, nothing delivered, and the tokens recoverable
+        // only through a separate withdraw. It is decidable from asset_ids
+        // alone, which is what puts it on this side of the line.
+        if (input.asset_ids.length > 1 && !input.allow_v1_bundle_sale) {
             throw new Error(
-                'settlement_quantity is required when intended_delphi_median is not "0": '
-                + 'a delphi sale settles in a different symbol than it lists in'
+                `asset_ids carries ${input.asset_ids.length} ids and a purchase takes exactly one: `
+                + 'AtomicMarket v2 declines a sale of several assets and erases it without paying out, '
+                + 'after the deposit has already credited the buyer, so the buyer pays and receives nothing. '
+                + 'Pass allow_v1_bundle_sale to buy a bundle on a chain still running AtomicMarket v1'
             );
+        }
+
+        if (settlesItsListingSymbol) {
+            // The precondition the plain branch of calc_settlement_price
+            // carries, mirrored because it is decidable from the two fields the
+            // contract itself compares: a nonzero median on a sale that settles
+            // what it lists is a transaction no chain state can make land.
+            if (input.intended_delphi_median !== '0') {
+                throw new Error(
+                    `intended_delphi_median "${input.intended_delphi_median}" must be "0" when listing_price `
+                    + `"${input.listing_price}" and settlement_symbol "${input.settlement_symbol}" name one symbol: `
+                    + 'the contract reads a median only for a sale settling a symbol it did not price in'
+                );
+            }
+
+            // The check nothing on chain stands behind. That same branch settles
+            // the listed quantity itself, so a divergent settlement_quantity deposits
+            // an amount the purchase never spends: short, and it draws the
+            // difference from whatever balance the buyer already holds; over, and
+            // the surplus stays in the market's balance table until they withdraw
+            // it. Only a supplied one is checked, because omitting it is how the
+            // type documents this case and the transfer then reuses listing_price
+            // anyway.
+            if (input.settlement_quantity !== undefined && input.settlement_quantity !== input.listing_price) {
+                throw new Error(
+                    `settlement_quantity "${input.settlement_quantity}" does not match `
+                    + `listing_price "${input.listing_price}": a sale settling the symbol it priced in `
+                    + 'settles that exact quantity'
+                );
+            }
+        } else {
+            // The settlement amount is then the oracle conversion of the listing
+            // price, which listing_price is not, so falling back to it would
+            // deposit an amount denominated in the wrong symbol with nothing on
+            // chain to catch it: assertsale pins the listing terms, never the
+            // deposit.
+            if (input.settlement_quantity === undefined) {
+                throw new Error(
+                    `settlement_quantity is required when listing_price "${input.listing_price}" and `
+                    + `settlement_symbol "${input.settlement_symbol}" name different symbols: `
+                    + 'such a sale settles the oracle conversion of its listing price, not the price itself'
+                );
+            }
+
+            // Requiring the quantity says nothing about what it is denominated
+            // in, and the same wrong-payment failure the plain branch guards
+            // sits here: a deposit in another symbol credits a balance the
+            // purchase never spends, while the settlement amount is drawn from
+            // whatever the buyer already holds in the symbol that settles.
+            if (!namesSameSymbol(input.settlement_quantity, input.settlement_symbol)) {
+                throw new Error(
+                    `settlement_quantity "${input.settlement_quantity}" is not denominated in `
+                    + `settlement_symbol "${input.settlement_symbol}": the deposit funds the purchase, `
+                    + 'and the purchase spends the settlement symbol'
+                );
+            }
         }
 
         return [
@@ -285,6 +398,13 @@ export class MarketActionBuilder {
     // The listing pair. Announcing alone lists nothing and offering alone
     // dangles, so the two belong in one transaction; the offer is an
     // AtomicAssets action, built by that contract's own builder.
+    //
+    // Nothing about the symbols is checked. announcesale accepts a listing
+    // priced in its settlement symbol if that symbol is a supported token, and
+    // one priced in another if the two are a registered pair, and both of those
+    // are chain state this helper is not handed. Either refusal is a
+    // transaction the chain rejects, which is the far side of the line these
+    // helpers hold.
     announceSaleActions(input: AnnounceSaleInput): EosioActionData[] {
         return [
             ...this.announcesale(

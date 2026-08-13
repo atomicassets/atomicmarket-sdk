@@ -5,7 +5,9 @@ import type { AttributeRoyaltyValue, RoyaltyPair } from './Actions/Generator';
 // uint64 and name fields arrive as strings (uint64 exceeds Number's safe
 // range; names are strings), int32/uint32/uint8/float64 arrive as numbers.
 
-// royaltyconf table, scope = collection (royaltyconf_s).
+// royaltyconf table, scope = the market contract, one row per collection
+// keyed by `collection` (royaltyconf_s). The two rule tables below are the
+// ones scoped per collection.
 export interface IRoyaltyConfigRow {
     collection: string;
     founders: RoyaltyPair[];
