@@ -1,7 +1,8 @@
 import { expect } from 'chai';
 
 import {
-    AnnounceSaleInput, AtomicMarketActions, EosioActionData, EosioActionObject, EosioAuthorizationObject,
+    AcceptBuyofferInput, AnnounceAuctionInput, AnnounceSaleInput, AtomicMarketActions,
+    EosioActionData, EosioActionObject, EosioAuthorizationObject, FulfillTemplateBuyofferInput,
     MarketActionBuilder, MarketActionGenerator, PurchaseSaleInput
 } from '../src';
 
@@ -38,6 +39,41 @@ const listing: AnnounceSaleInput = {
     listing_price: '100.00000000 WAX',
     settlement_symbol: '8,WAX',
     maker_marketplace: 'mymarketacct',
+    assets_contract: 'atomicassets'
+};
+
+// A day-long auction, the same single asset every v2 listing holds.
+const auctionListing: AnnounceAuctionInput = {
+    seller: 'selleracct11',
+    asset_ids: ['1099511627776'],
+    starting_bid: '10.00000000 WAX',
+    duration: 86400,
+    maker_marketplace: 'mymarketacct',
+    assets_contract: 'atomicassets'
+};
+
+// The recipient of a buyoffer accepting it: they sign, and they are the sender
+// of the offer the contract reads out of the AtomicAssets offers table.
+const buyofferAcceptance: AcceptBuyofferInput = {
+    recipient: 'selleracct11',
+    buyoffer_id: '7',
+    asset_ids: ['1099511627776'],
+    expected_price: '100.00000000 WAX',
+    taker_marketplace: 'mymarketacct',
+    assets_contract: 'atomicassets'
+};
+
+const bundleBuyofferAcceptance: AcceptBuyofferInput = {
+    ...buyofferAcceptance,
+    asset_ids: ['1099511627776', '1099511627777']
+};
+
+const templateFulfilment: FulfillTemplateBuyofferInput = {
+    seller: 'selleracct11',
+    buyoffer_id: '9',
+    asset_id: '1099511627776',
+    expected_price: '100.00000000 WAX',
+    taker_marketplace: 'mymarketacct',
     assets_contract: 'atomicassets'
 };
 
@@ -666,6 +702,470 @@ describe('MarketActionBuilder composed-flow guards', () => {
     });
 });
 
+describe('MarketActionBuilder auction actions', () => {
+    const contract = 'atomicmarket';
+    const builder = new MarketActionBuilder(contract);
+
+    it('announceauct emits seller, asset_ids, starting_bid, duration and maker_marketplace, the duration as a number', () => {
+        const actions = builder.announceauct('alice', ['1099511627776'], '10.00000000 WAX', '86400', 'mymarketacct');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'announceauct',
+            data: {
+                seller: 'alice',
+                asset_ids: ['1099511627776'],
+                starting_bid: '10.00000000 WAX',
+                duration: 86400,
+                maker_marketplace: 'mymarketacct'
+            }
+        }]);
+    });
+
+    it('cancelauct emits only auction_id, as a string (uint64)', () => {
+        const actions = builder.cancelauct('42');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'cancelauct',
+            data: {
+                auction_id: '42'
+            }
+        }]);
+    });
+
+    it('auctionbid emits bidder, auction_id, bid and taker_marketplace', () => {
+        const actions = builder.auctionbid('bob', '42', '11.00000000 WAX', 'mymarketacct');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'auctionbid',
+            data: {
+                bidder: 'bob',
+                auction_id: '42',
+                bid: '11.00000000 WAX',
+                taker_marketplace: 'mymarketacct'
+            }
+        }]);
+    });
+
+    it('auctclaimbuy emits only auction_id', () => {
+        expect(builder.auctclaimbuy('42')).to.deep.equal([{
+            account: contract,
+            name: 'auctclaimbuy',
+            data: {
+                auction_id: '42'
+            }
+        }]);
+    });
+
+    it('auctclaimsel emits only auction_id', () => {
+        expect(builder.auctclaimsel('42')).to.deep.equal([{
+            account: contract,
+            name: 'auctclaimsel',
+            data: {
+                auction_id: '42'
+            }
+        }]);
+    });
+
+    it('assertauct emits auction_id and asset_ids_to_assert', () => {
+        const actions = builder.assertauct('42', ['1099511627776']);
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'assertauct',
+            data: {
+                auction_id: '42',
+                asset_ids_to_assert: ['1099511627776']
+            }
+        }]);
+    });
+
+    it('uint64 auction ids and asset ids above 2^53 survive verbatim across the auction family', () => {
+        const max = '18446744073709551615';
+
+        expect(builder.announceauct('alice', [max], '10.00000000 WAX', 1, '.')[0].data.asset_ids).to.deep.equal([max]);
+        expect(builder.cancelauct(max)[0].data.auction_id).to.equal(max);
+        expect(builder.auctionbid('bob', max, '11.00000000 WAX', '.')[0].data.auction_id).to.equal(max);
+        expect(builder.auctclaimbuy(max)[0].data.auction_id).to.equal(max);
+        expect(builder.auctclaimsel(max)[0].data.auction_id).to.equal(max);
+        expect(builder.assertauct(max, [max])[0].data.asset_ids_to_assert).to.deep.equal([max]);
+    });
+
+    it('announceauct refuses a fractional, negative or above-uint32 duration, naming the field and the value', () => {
+        for (const duration of [86400.5, -1, 4294967296, '86400.5', 'a day']) {
+            expect(() => builder.announceauct('alice', ['1'], '10.00000000 WAX', duration, '.'), String(duration))
+                .to.throw(/duration/);
+            expect(() => builder.announceauct('alice', ['1'], '10.00000000 WAX', duration, '.'), String(duration))
+                .to.throw(new RegExp(String(duration).replace('.', '\\.')));
+        }
+    });
+
+    it('announceauct refuses NaN and Infinity rather than packing a duration that serializes as null', () => {
+        for (const duration of [NaN, Infinity, -Infinity]) {
+            expect(() => builder.announceauct('alice', ['1'], '10.00000000 WAX', duration, '.'), String(duration))
+                .to.throw(/duration/);
+        }
+    });
+
+    it('announceauct builds at both ends of the uint32 range, the configured bounds being chain state', () => {
+        expect(builder.announceauct('alice', ['1'], '10.00000000 WAX', 0, '.')[0].data.duration).to.equal(0);
+        expect(builder.announceauct('alice', ['1'], '10.00000000 WAX', 4294967295, '.')[0].data.duration).to.equal(4294967295);
+        expect(builder.announceauct('alice', ['1'], '10.00000000 WAX', '4294967295', '.')[0].data.duration).to.equal(4294967295);
+    });
+});
+
+describe('MarketActionBuilder buyoffer and template-buyoffer actions', () => {
+    const contract = 'atomicmarket';
+    const builder = new MarketActionBuilder(contract);
+    const generator = new MarketActionGenerator(contract);
+
+    it('createbuyo emits buyer, recipient, price, asset_ids, memo and maker_marketplace', () => {
+        const actions = builder.createbuyo('bob', 'alice', '100.00000000 WAX', ['1099511627776'], 'please sell', 'mymarketacct');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'createbuyo',
+            data: {
+                buyer: 'bob',
+                recipient: 'alice',
+                price: '100.00000000 WAX',
+                asset_ids: ['1099511627776'],
+                memo: 'please sell',
+                maker_marketplace: 'mymarketacct'
+            }
+        }]);
+    });
+
+    it('cancelbuyo emits only buyoffer_id, as a string (uint64)', () => {
+        expect(builder.cancelbuyo('7')).to.deep.equal([{
+            account: contract,
+            name: 'cancelbuyo',
+            data: {
+                buyoffer_id: '7'
+            }
+        }]);
+    });
+
+    it('declinebuyo emits buyoffer_id and decline_memo', () => {
+        const actions = builder.declinebuyo('7', 'not for sale');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'declinebuyo',
+            data: {
+                buyoffer_id: '7',
+                decline_memo: 'not for sale'
+            }
+        }]);
+    });
+
+    it('createtbuyo emits buyer, price, collection_name, template_id and maker_marketplace, its uint64 template_id uncoerced', () => {
+        const actions = builder.createtbuyo('bob', '100.00000000 WAX', 'mycollection', '1234', 'mymarketacct');
+
+        expect(actions).to.deep.equal([{
+            account: contract,
+            name: 'createtbuyo',
+            data: {
+                buyer: 'bob',
+                price: '100.00000000 WAX',
+                collection_name: 'mycollection',
+                template_id: '1234',
+                maker_marketplace: 'mymarketacct'
+            }
+        }]);
+    });
+
+    it('canceltbuyo emits only buyoffer_id, as a string (uint64)', () => {
+        expect(builder.canceltbuyo('9')).to.deep.equal([{
+            account: contract,
+            name: 'canceltbuyo',
+            data: {
+                buyoffer_id: '9'
+            }
+        }]);
+    });
+
+    it('uint64 buyoffer ids, asset ids and template ids above 2^53 survive verbatim', () => {
+        const max = '18446744073709551615';
+
+        expect(builder.createbuyo('bob', 'alice', '1.00000000 WAX', [max], '', '.')[0].data.asset_ids).to.deep.equal([max]);
+        expect(builder.cancelbuyo(max)[0].data.buyoffer_id).to.equal(max);
+        expect(builder.declinebuyo(max, '')[0].data.buyoffer_id).to.equal(max);
+        expect(builder.createtbuyo('bob', '1.00000000 WAX', 'mycollection', max, '.')[0].data.template_id).to.equal(max);
+        expect(builder.canceltbuyo(max)[0].data.buyoffer_id).to.equal(max);
+    });
+
+    it('neither the builder nor the generator exposes acceptbuyo or fulfilltbuyo, the composed helpers being the only path', () => {
+        const surfaces: Record<string, unknown>[] = [
+            builder as unknown as Record<string, unknown>,
+            generator as unknown as Record<string, unknown>
+        ];
+
+        for (const surface of surfaces) {
+            for (const name of ['acceptbuyo', 'fulfilltbuyo']) {
+                expect(surface[name], name).to.equal(undefined);
+            }
+        }
+    });
+});
+
+describe('MarketActionGenerator auction and buyoffer parity', () => {
+    const contract = 'atomicmarket';
+    const builder = new MarketActionBuilder(contract);
+    const generator = new MarketActionGenerator(contract);
+    const authorization: EosioAuthorizationObject[] = [{actor: 'seller', permission: 'active'}];
+
+    it('the builder emits no authorization and the generator emits the builder payload plus the passed authorization', async () => {
+        const cases: Array<[EosioActionData[], EosioActionObject[]]> = [
+            [
+                builder.announceauct('alice', ['1'], '10.00000000 WAX', 86400, '.'),
+                await generator.announceauct(authorization, 'alice', ['1'], '10.00000000 WAX', 86400, '.')
+            ],
+            [builder.cancelauct('42'), await generator.cancelauct(authorization, '42')],
+            [
+                builder.auctionbid('bob', '42', '11.00000000 WAX', '.'),
+                await generator.auctionbid(authorization, 'bob', '42', '11.00000000 WAX', '.')
+            ],
+            [builder.auctclaimbuy('42'), await generator.auctclaimbuy(authorization, '42')],
+            [builder.auctclaimsel('42'), await generator.auctclaimsel(authorization, '42')],
+            [builder.assertauct('42', ['1']), await generator.assertauct(authorization, '42', ['1'])],
+            [
+                builder.createbuyo('bob', 'alice', '100.00000000 WAX', ['1'], 'please sell', '.'),
+                await generator.createbuyo(authorization, 'bob', 'alice', '100.00000000 WAX', ['1'], 'please sell', '.')
+            ],
+            [builder.cancelbuyo('7'), await generator.cancelbuyo(authorization, '7')],
+            [builder.declinebuyo('7', 'no'), await generator.declinebuyo(authorization, '7', 'no')],
+            [
+                builder.createtbuyo('bob', '100.00000000 WAX', 'mycollection', '1234', '.'),
+                await generator.createtbuyo(authorization, 'bob', '100.00000000 WAX', 'mycollection', '1234', '.')
+            ],
+            [builder.canceltbuyo('9'), await generator.canceltbuyo(authorization, '9')]
+        ];
+
+        expect(cases).to.have.lengthOf(11);
+
+        for (const [sync, generated] of cases) {
+            expect(sync[0]).to.not.have.property('authorization');
+            expect(generated).to.deep.equal(sync.map((action) => ({...action, authorization})));
+        }
+    });
+});
+
+// Both offer-consuming flows turn on the contract reading the globally last
+// created row of the AtomicAssets offers table rather than an offer id it is
+// handed, so what each helper emits and the order it emits them in is the
+// contract's rule and not a preference.
+describe('MarketActionBuilder composed auction and buyoffer flows', () => {
+    const contract = 'atomicmarket';
+    const builder = new MarketActionBuilder(contract);
+    const generator = new MarketActionGenerator(contract);
+    const authorization: EosioAuthorizationObject[] = [{actor: 'seller', permission: 'active'}];
+
+    it('announceAuctionActions emits announceauct then the assets contract transfer of the same assets to the market with memo auction', () => {
+        const actions = builder.announceAuctionActions(auctionListing);
+
+        expect(actions).to.deep.equal([
+            {
+                account: contract,
+                name: 'announceauct',
+                data: {
+                    seller: 'selleracct11',
+                    asset_ids: ['1099511627776'],
+                    starting_bid: '10.00000000 WAX',
+                    duration: 86400,
+                    maker_marketplace: 'mymarketacct'
+                }
+            },
+            {
+                account: 'atomicassets',
+                name: 'transfer',
+                data: {
+                    from: 'selleracct11',
+                    to: contract,
+                    asset_ids: ['1099511627776'],
+                    memo: 'auction'
+                }
+            }
+        ]);
+    });
+
+    it('announceAuctionActions builds every auction it is handed, durations, symbols and marketplaces being chain state', () => {
+        const auctions: AnnounceAuctionInput[] = [
+            auctionListing,
+            {...auctionListing, duration: 1},
+            {...auctionListing, duration: 4294967295},
+            {...auctionListing, starting_bid: '0.00000000 WAX'},
+            {...auctionListing, starting_bid: '10.0000 UNKNOWN'},
+            {...auctionListing, maker_marketplace: 'notregistered'},
+            // A bundle auction, which v2's announceauct refuses outright. That
+            // refusal is a rejected transaction, so it stays on the chain's
+            // side of the line the sale helpers hold.
+            {...auctionListing, asset_ids: ['1099511627776', '1099511627777']}
+        ];
+
+        for (const candidate of auctions) {
+            const [announceauct, transfer] = builder.announceAuctionActions(candidate);
+
+            expect(announceauct.data.starting_bid).to.equal(candidate.starting_bid);
+            expect(announceauct.data.duration).to.equal(Number(candidate.duration));
+            expect(transfer.data.asset_ids).to.deep.equal(candidate.asset_ids);
+        }
+    });
+
+    it('announceAuctionActions reads assets_contract for the transfer account, not a hardcoded atomicassets', () => {
+        const actions = builder.announceAuctionActions({...auctionListing, assets_contract: 'aa.custom'});
+
+        expect(actions[1].account).to.equal('aa.custom');
+    });
+
+    it('acceptBuyofferActions emits the createoffer with memo buyoffer immediately followed by acceptbuyo, and nothing else', () => {
+        const actions = builder.acceptBuyofferActions(buyofferAcceptance);
+
+        expect(actions).to.deep.equal([
+            {
+                account: 'atomicassets',
+                name: 'createoffer',
+                data: {
+                    sender: 'selleracct11',
+                    recipient: contract,
+                    sender_asset_ids: ['1099511627776'],
+                    recipient_asset_ids: [],
+                    memo: 'buyoffer'
+                }
+            },
+            {
+                account: contract,
+                name: 'acceptbuyo',
+                data: {
+                    buyoffer_id: '7',
+                    expected_asset_ids: ['1099511627776'],
+                    expected_price: '100.00000000 WAX',
+                    taker_marketplace: 'mymarketacct'
+                }
+            }
+        ]);
+    });
+
+    it('acceptBuyofferActions reads assets_contract for the createoffer account, not a hardcoded atomicassets', () => {
+        const actions = builder.acceptBuyofferActions({...buyofferAcceptance, assets_contract: 'aa.custom'});
+
+        expect(actions[0].account).to.equal('aa.custom');
+    });
+
+    it('fulfillTemplateBuyofferActions emits the createoffer with memo tbuyoffer immediately followed by fulfilltbuyo, and nothing else', () => {
+        const actions = builder.fulfillTemplateBuyofferActions(templateFulfilment);
+
+        expect(actions).to.deep.equal([
+            {
+                account: 'atomicassets',
+                name: 'createoffer',
+                data: {
+                    sender: 'selleracct11',
+                    recipient: contract,
+                    sender_asset_ids: ['1099511627776'],
+                    recipient_asset_ids: [],
+                    memo: 'tbuyoffer'
+                }
+            },
+            {
+                account: contract,
+                name: 'fulfilltbuyo',
+                data: {
+                    seller: 'selleracct11',
+                    buyoffer_id: '9',
+                    asset_id: '1099511627776',
+                    expected_price: '100.00000000 WAX',
+                    taker_marketplace: 'mymarketacct'
+                }
+            }
+        ]);
+    });
+
+    it('fulfillTemplateBuyofferActions reads assets_contract for the createoffer account, not a hardcoded atomicassets', () => {
+        const actions = builder.fulfillTemplateBuyofferActions({...templateFulfilment, assets_contract: 'aa.custom'});
+
+        expect(actions[0].account).to.equal('aa.custom');
+    });
+
+    it('uint64 ids above 2^53 survive verbatim through both offer-consuming flows', () => {
+        const max = '18446744073709551615';
+        const accept = builder.acceptBuyofferActions({...buyofferAcceptance, buyoffer_id: max, asset_ids: [max]});
+        const fulfil = builder.fulfillTemplateBuyofferActions({...templateFulfilment, buyoffer_id: max, asset_id: max});
+
+        expect(accept[0].data.sender_asset_ids).to.deep.equal([max]);
+        expect(accept[1].data.buyoffer_id).to.equal(max);
+        expect(accept[1].data.expected_asset_ids).to.deep.equal([max]);
+        expect(fulfil[0].data.sender_asset_ids).to.deep.equal([max]);
+        expect(fulfil[1].data.buyoffer_id).to.equal(max);
+        expect(fulfil[1].data.asset_id).to.equal(max);
+    });
+
+    it('acceptBuyofferActions throws on two or more asset ids, naming the count', () => {
+        expect(() => builder.acceptBuyofferActions(bundleBuyofferAcceptance)).to.throw(/asset_ids carries 2 ids/);
+        expect(() => builder.acceptBuyofferActions(bundleBuyofferAcceptance)).to.throw(/allow_v1_bundle_buyoffer/);
+    });
+
+    it('allow_v1_bundle_buyoffer builds the same shape, for a chain still running v1', () => {
+        const actions = builder.acceptBuyofferActions({...bundleBuyofferAcceptance, allow_v1_bundle_buyoffer: true});
+
+        expect(actions.map((action) => [action.account, action.name])).to.deep.equal([
+            ['atomicassets', 'createoffer'],
+            [contract, 'acceptbuyo']
+        ]);
+        expect(actions[0].data.sender_asset_ids).to.deep.equal(['1099511627776', '1099511627777']);
+        expect(actions[1].data.expected_asset_ids).to.deep.equal(['1099511627776', '1099511627777']);
+    });
+
+    it('one asset id and none at all both pass the bundle check, an empty acceptance only being refused on chain', () => {
+        expect(() => builder.acceptBuyofferActions(buyofferAcceptance)).to.not.throw();
+        expect(() => builder.acceptBuyofferActions({...buyofferAcceptance, asset_ids: []})).to.not.throw();
+    });
+
+    it('the three composed helpers hold their parity on the async generator surface', async () => {
+        const cases: Array<[EosioActionData[], EosioActionObject[]]> = [
+            [
+                builder.announceAuctionActions(auctionListing),
+                await generator.announceAuctionActions(authorization, auctionListing)
+            ],
+            [
+                builder.acceptBuyofferActions(buyofferAcceptance),
+                await generator.acceptBuyofferActions(authorization, buyofferAcceptance)
+            ],
+            [
+                builder.fulfillTemplateBuyofferActions(templateFulfilment),
+                await generator.fulfillTemplateBuyofferActions(authorization, templateFulfilment)
+            ]
+        ];
+
+        for (const [sync, generated] of cases) {
+            expect(sync).to.have.lengthOf(2);
+            expect(sync[0]).to.not.have.property('authorization');
+            expect(generated).to.deep.equal(sync.map((action) => ({...action, authorization})));
+        }
+    });
+
+    it('the bundle guard reaches the async generator surface, where announcing an auction rejects nothing', async () => {
+        const messages: string[] = [];
+
+        for (const attempt of [
+            generator.acceptBuyofferActions(authorization, bundleBuyofferAcceptance),
+            generator.announceAuctionActions(authorization, {...auctionListing, asset_ids: ['1', '2']})
+        ]) {
+            try {
+                await attempt;
+                messages.push('resolved');
+            } catch (error) {
+                messages.push((error as Error).message);
+            }
+        }
+
+        expect(messages[0]).to.match(/asset_ids carries 2 ids/);
+        expect(messages[1]).to.equal('resolved');
+    });
+});
+
 describe('MarketActionBuilder marketplace and balance actions', () => {
     const contract = 'atomicmarket';
     const builder = new MarketActionBuilder(contract);
@@ -742,5 +1242,40 @@ describe('AtomicMarketActions action-name constants', () => {
         const [action] = await generator.delroyalconf(authorization, 'mycollection');
 
         expect(action.name).to.equal(AtomicMarketActions.delroyalconf);
+    });
+
+    it('is what each auction, buyoffer and template-buyoffer builder emits', () => {
+        const builder = new MarketActionBuilder('atomicmarket');
+
+        const emitted: EosioActionData[][] = [
+            builder.announceauct('alice', ['1'], '10.00000000 WAX', 86400, '.'),
+            builder.cancelauct('42'),
+            builder.auctionbid('bob', '42', '11.00000000 WAX', '.'),
+            builder.auctclaimbuy('42'),
+            builder.auctclaimsel('42'),
+            builder.assertauct('42', ['1']),
+            builder.createbuyo('bob', 'alice', '100.00000000 WAX', ['1'], '', '.'),
+            builder.cancelbuyo('7'),
+            builder.declinebuyo('7', ''),
+            builder.createtbuyo('bob', '100.00000000 WAX', 'mycollection', '1234', '.'),
+            builder.canceltbuyo('9')
+        ];
+
+        const names = emitted.map(([action]) => action.name);
+
+        expect(names).to.deep.equal([
+            AtomicMarketActions.announceauct, AtomicMarketActions.cancelauct, AtomicMarketActions.auctionbid,
+            AtomicMarketActions.auctclaimbuy, AtomicMarketActions.auctclaimsel, AtomicMarketActions.assertauct,
+            AtomicMarketActions.createbuyo, AtomicMarketActions.cancelbuyo, AtomicMarketActions.declinebuyo,
+            AtomicMarketActions.createtbuyo, AtomicMarketActions.canceltbuyo
+        ]);
+    });
+
+    it('is what the composed helpers emit for the two actions they alone reach', () => {
+        const builder = new MarketActionBuilder('atomicmarket');
+
+        expect(builder.acceptBuyofferActions(buyofferAcceptance)[1].name).to.equal(AtomicMarketActions.acceptbuyo);
+        expect(builder.fulfillTemplateBuyofferActions(templateFulfilment)[1].name).to.equal(AtomicMarketActions.fulfilltbuyo);
+        expect(builder.announceAuctionActions(auctionListing)[0].name).to.equal(AtomicMarketActions.announceauct);
     });
 });

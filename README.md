@@ -143,7 +143,7 @@ await session.transact({
 
 ## Building market actions
 
-The sale lifecycle actions build the same way: unsigned action objects for your signing library. uint64 fields (the listing ids and `intended_delphi_median`) are strings so 64-bit values pass through without precision loss. Price fields use chain notation: `'100.00000000 WAX'` for an asset, `'8,WAX'` for a symbol.
+The sale, auction, buyoffer, and template-buyoffer actions build the same way: unsigned action objects for your signing library. uint64 fields (the sale, auction, and buyoffer ids, the asset and template ids, and `intended_delphi_median`) are strings so 64-bit values pass through without precision loss. Price fields use chain notation: `'100.00000000 WAX'` for an asset, `'8,WAX'` for a symbol.
 
 ```ts
 import { MarketActionBuilder } from '@atomichub/atomicmarket';
@@ -162,7 +162,7 @@ const auctionRam = builder.payauctram('payeracct111', '42');
 const buyofferRam = builder.paybuyoram('payeracct111', '7');
 ```
 
-Listing an asset and buying one are not single actions, though, and in both cases the action order, the memo literals, and which contract each action belongs to are rules of the contracts rather than choices. Those two flows come as composed helpers, so that knowledge lives here instead of in every integration. The actions they compose stay on the builder as well, for anything that needs to assemble its own transaction shape.
+Several of these flows are not single actions, though, and in each case the action order, the memo literals, and which contract each action belongs to are rules of the contracts rather than choices. Those flows come as composed helpers, so that knowledge lives here instead of in every integration. The actions they compose stay on the builder as well, for anything that needs to assemble its own transaction shape, with two exceptions noted below where building the action alone is not safe.
 
 ### Listing an asset
 
@@ -295,12 +295,107 @@ Two cases have no amount to reproduce and throw instead. A pair whose exponent w
 
 `settlement_quantity` is required whenever `settlement_symbol` is not the listing price's own symbol, and it must be denominated in that settlement symbol. Without it the helper would deposit the listing price, which on such a sale is an amount in the wrong currency; with a quantity in some third symbol the deposit credits a balance the purchase never spends, while the real settlement amount is drawn from whatever the buyer already holds in the right one. Both throw.
 
+### Auctions
+
+An auction is announced and then activated. `announceauct` writes the row, and the auction becomes biddable only once the seller transfers the assets into the market contract's custody with memo `'auction'`. `announceAuctionActions` returns that pair.
+
+```ts
+const auction = builder.announceAuctionActions({
+    seller: 'selleracct11',
+    asset_ids: ['1099511627776'],
+    starting_bid: '10.00000000 WAX',
+    duration: 86400, // seconds
+    maker_marketplace: '', // '' for none, or your registered marketplace account
+    assets_contract: 'atomicassets'
+});
+```
+
+The order is the contract's rather than the helper's: the transfer's handler looks an announced auction up by its assets and its seller, so a transfer arriving first has nothing to activate and fails. Where a sale takes an AtomicAssets offer, an auction takes a transfer, and the assets sit in the market contract's custody for the auction's whole duration rather than in an offer until someone buys.
+
+`duration` is the one field here read as a number, and it is checked for being a whole number inside the uint32 range before it is packed, so a `NaN` cannot reach your signing library as a `null`. Whether it also falls inside the contract config's minimum and maximum, whether the starting bid's symbol is supported, and whether the marketplace is registered are chain state, and each refusal is a rejected transaction.
+
+The rest of the lifecycle is plain builders:
+
+```ts
+// Pair an assertion with a bid the way assertsale pairs with a purchase
+const assertion = builder.assertauct('42', ['1099511627776']);
+const bid = builder.auctionbid('bidderacct11', '42', '11.00000000 WAX', '');
+
+const claimedByBuyer = builder.auctclaimbuy('42');  // the winner takes the assets
+const claimedBySeller = builder.auctclaimsel('42'); // the seller takes the bid, less fees
+const cancelled = builder.cancelauct('42');         // only before a bid lands
+```
+
+A bid is spent from the bidder's balance inside the market contract rather than from their wallet, so fund it first with a transfer carrying memo `deposit`. An outbid bid returns to its bidder's balance the same way, and `withdraw` is what moves a balance back out.
+
+An auction row holding more than one asset predates v2's removal of bundle listings and can no longer be bid on or claimed. Bidding on one, claiming one, or cancelling one dissolves it instead: the standing bid returns to the bidder's balance, the assets return to the seller, the row is erased, and the transaction commits. Nothing guards against that, since these actions are handed an auction id and this SDK cannot see how many assets the row holds, and a bundle row is an ordinary auction on a chain still running v1. Nothing is stranded either way, which is what keeps it on the documented side of the line.
+
+### Buyoffers
+
+A buyoffer is an unsolicited bid on an asset somebody else owns. The buyer escrows the price with `createbuyo`, and the recipient accepts or declines it.
+
+```ts
+const wanted = builder.createbuyo(
+    'buyeracct111', 'holderacct11', '100.00000000 WAX', ['1099511627776'], 'please sell', ''
+);
+
+const withdrawn = builder.cancelbuyo('7');                // the buyer changes their mind
+const refused = builder.declinebuyo('7', 'not for sale'); // the recipient says no
+```
+
+`createbuyo` spends the price from the buyer's market balance, the way a bid does, so a deposit transfer usually comes first. Cancelling and declining both return it.
+
+Accepting is a composed flow, because the contract takes no offer id. `acceptbuyo` reads the globally last created row of the AtomicAssets offers table and checks it against the buyoffer, so the offer has to be created in the same transaction, immediately before it:
+
+```ts
+const accepted = builder.acceptBuyofferActions({
+    recipient: 'holderacct11', // signs the transaction, and sends the offer
+    buyoffer_id: '7',
+    asset_ids: ['1099511627776'],
+    expected_price: '100.00000000 WAX',
+    taker_marketplace: '',
+    assets_contract: 'atomicassets'
+});
+```
+
+No other `createoffer` may run between this helper's `createoffer` and the market action: the contract would read that one instead, and every check it makes against the offer would fail against it. Appending further actions after the market action, including another accept flow, is safe, the inline `acceptoffer` having consumed the row by then. Do not accept the offer yourself either, since the market contract sends that `acceptoffer`, and an offer already accepted is gone from the table before the contract can find it. That is why `acceptbuyo` is reachable only through this helper.
+
+`acceptBuyofferActions` throws on more than one entry in `asset_ids`. It is the one place in these families where a mistake commits and leaves damage behind rather than reverting: `acceptbuyo` on v2 returns early for a buyoffer row holding several assets, refunding the buyer and erasing the row before it reads the offers table at all, so the transaction lands with nothing sold and the offer this flow created still in the offers table on the recipient's RAM, neither accepted nor declined, until they cancel it. Bundle buyoffers accept correctly on a chain still running v1, and `allow_v1_bundle_buyoffer: true` is the opt-out for one there.
+
+### Template buyoffers
+
+A template buyoffer is a standing bid on any asset of a template rather than on one particular asset, so any holder of that template can fill it.
+
+```ts
+const wanted = builder.createtbuyo('buyeracct111', '100.00000000 WAX', 'mycollection', '1234', '');
+const withdrawn = builder.canceltbuyo('9');
+```
+
+`template_id` is a uint64 on these actions and passes through as a string, unlike the int32 `template_id` the royalty builders take. They are two different ABI types on different actions.
+
+Filling one reads the offers table exactly as accepting a buyoffer does, with memo `'tbuyoffer'`, and `fulfillTemplateBuyofferActions` composes that pair:
+
+```ts
+const fulfilled = builder.fulfillTemplateBuyofferActions({
+    seller: 'selleracct11', // signs the transaction, and sends the offer
+    buyoffer_id: '9',
+    asset_id: '1099511627776', // must carry the template the buyoffer names
+    expected_price: '100.00000000 WAX',
+    taker_marketplace: '',
+    assets_contract: 'atomicassets'
+});
+```
+
+The same-transaction rule and the no-other-`createoffer` rule hold unchanged, and `fulfilltbuyo` is likewise reachable only through this helper. This one carries no bundle guard, a template buyoffer naming a single asset by construction.
+
 ### What the builders validate
 
 Almost nothing, deliberately. These are composition helpers over values you already trust: they emit what you hand them, and checking a sale you read from an API is your side of that line. The exceptions all share one property, that their failure is a wrong payment rather than a rejected transaction, and each names the offending values in the error:
 
 - `purchaseSaleActions` throws on more than one entry in `asset_ids`, unless `allow_v1_bundle_sale` says the chain is still on v1.
 - `purchaseSaleActions` requires `settlement_quantity`, denominated in `settlement_symbol`, when that symbol is not the listing price's own; and when it is, requires a supplied one to equal `listing_price` and `intended_delphi_median` to be `'0'`.
+- `acceptBuyofferActions` throws on more than one entry in `asset_ids`, unless `allow_v1_bundle_buyoffer` says the chain is still on v1.
+- `announceauct` refuses a `duration` that is not a whole number inside the uint32 range, which is a serialization bound rather than a chain rule: the configured minimum and maximum are chain state and go unchecked.
 - The delphi utilities reject a non-positive median, a precision outside the 0 to 18 the chain allows, and a pair the contract's own conversion cannot compute.
 
 The symbol checks turn on the discriminator the contract itself uses, whether the sale's two symbol fields name a single symbol, precision and code both.
@@ -319,6 +414,12 @@ Breaking, and worth reading before upgrading: `deriveSettlementAmount` returns a
 - `purchaseSaleActions` keys its checks on the contract's settlement discriminator, full symbol equality between `listing_price` and `settlement_symbol`, so a settlement symbol differing from the price in precision alone settles through the oracle rather than reading as a mismatch.
 - On a sale settling the symbol it priced in, a supplied `settlement_quantity` must equal `listing_price` and `intended_delphi_median` must be `'0'`.
 - `sideEffects: false`, matching the sibling atomicassets package, so bundlers may drop the package from builds that import nothing from it.
+
+Additive in the same release:
+
+- Auction, buyoffer, and template-buyoffer actions on `MarketActionBuilder` and `MarketActionGenerator`: `announceauct`, `cancelauct`, `auctionbid`, `auctclaimbuy`, `auctclaimsel`, `assertauct`, `createbuyo`, `cancelbuyo`, `declinebuyo`, `createtbuyo`, and `canceltbuyo`.
+- `announceAuctionActions` composing the auction pair, and `acceptBuyofferActions` and `fulfillTemplateBuyofferActions` composing the two flows whose market action reads the last created row of the AtomicAssets offers table. `acceptbuyo` and `fulfilltbuyo` are reachable only through those helpers, neither being safe to build on its own.
+- `AnnounceAuctionInput`, `AcceptBuyofferInput`, and `FulfillTemplateBuyofferInput` exported beside `PurchaseSaleInput` and `AnnounceSaleInput`.
 
 ## What's new in 2.2.1
 

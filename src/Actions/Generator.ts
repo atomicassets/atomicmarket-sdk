@@ -134,8 +134,62 @@ export type AnnounceSaleInput = {
     assets_contract: string
 };
 
+// Everything the auction pair needs. assets_contract is the AtomicAssets
+// contract the auctioned assets live on, exactly as on AnnounceSaleInput.
+export type AnnounceAuctionInput = {
+    seller: string,
+    // One id per auction on v2, where announceauct refuses a bundle outright
+    // and asks for one auction per asset instead; several auctions may still be
+    // announced in a single transaction. A chain still on v1 takes bundles.
+    asset_ids: string[],
+    starting_bid: string,
+    // Seconds, as a uint32. The contract bounds it further by the config's
+    // minimum and maximum auction duration, which is chain state nothing here
+    // reads; only the ABI width is checked.
+    duration: number | string,
+    maker_marketplace: string,
+    assets_contract: string
+};
+
+// Everything accepting a buyoffer needs. recipient is the buyoffer's own
+// recipient, who signs the transaction and must also be the sender of the
+// offer: acceptbuyo requires the last created AtomicAssets offer to come from
+// the recipient and go to the market contract.
+export type AcceptBuyofferInput = {
+    recipient: string,
+    buyoffer_id: string,
+    // The buyoffer row's asset ids. The contract compares them twice, once
+    // against the expected_asset_ids this helper fills from them and once
+    // against the contents of the offer it reads, so the same list has to
+    // describe the row and the offer alike.
+    asset_ids: string[],
+    expected_price: string,
+    taker_marketplace: string,
+    assets_contract: string,
+    // Opt out of the single-asset rule, for a recipient on a chain still
+    // running AtomicMarket v1, where bundle buyoffers are ordinary rows that
+    // accept correctly. On v2 the same transaction commits with the buyer
+    // refunded, the row erased, and this helper's offer left dangling, which is
+    // why it is off unless asked for.
+    allow_v1_bundle_buyoffer?: boolean
+};
+
+// Everything fulfilling a template buyoffer needs. seller signs and must be the
+// sender of the offer the contract reads, the way recipient is on
+// AcceptBuyofferInput; asset_id is the asset being sold into the offer, which
+// has to carry the template the buyoffer names.
+export type FulfillTemplateBuyofferInput = {
+    seller: string,
+    buyoffer_id: string,
+    asset_id: string,
+    expected_price: string,
+    taker_marketplace: string,
+    assets_contract: string
+};
+
 // Sync builders for the AtomicMarket v2 royalty-config, sale-lifecycle,
-// RAM-payment, marketplace-registration, and balance-withdrawal actions,
+// auction-lifecycle, buyoffer, template-buyoffer, RAM-payment,
+// marketplace-registration, and balance-withdrawal actions,
 // returning authorization-free {account, name, data} objects. None of
 // these actions carry an `authorized_*` field in `data`. The signer is
 // implicit in the transaction authorization, and adding one is not in the
@@ -242,6 +296,148 @@ export class MarketActionBuilder {
             intended_delphi_median,
             taker_marketplace
         });
+    }
+
+    // The auction family. Announcing writes the row; the auction only becomes
+    // biddable once the seller transfers the assets to the market contract with
+    // memo "auction", which is what announceAuctionActions below composes.
+    //
+    // A v2 auction holds exactly one asset. Rows holding more predate the
+    // removal of bundle listings, and bidding on one, claiming one, or
+    // cancelling one dissolves it instead of doing what was asked: any standing
+    // bid returns to the bidder's balance, custodied assets return to the
+    // seller, and the row is erased. That transaction commits. It is documented
+    // on each builder rather than guarded, because these actions are handed an
+    // auction id and the SDK cannot see how many assets the row holds.
+    announceauct(
+        seller: string, asset_ids: string[], starting_bid: string,
+        duration: number | string, maker_marketplace: string
+    ): EosioActionData[] {
+        return this._pack('announceauct', {
+            seller,
+            asset_ids,
+            starting_bid,
+            duration: this._uint32('duration', duration),
+            maker_marketplace
+        });
+    }
+
+    // Needs the seller's authority for an ordinary auction, and none at all for
+    // an invalid one: a row whose seller no longer owns the assets, or a legacy
+    // bundle, may be cancelled by anyone. An ordinary auction that already has
+    // a bid cannot be cancelled; a legacy bundle with one dissolves, unless a
+    // claim has already been made on it.
+    cancelauct(auction_id: string): EosioActionData[] {
+        return this._pack('cancelauct', {auction_id});
+    }
+
+    // The bid is spent from the bidder's balance inside the market contract,
+    // not from their wallet, so it has to be funded first by a transfer to the
+    // market contract with memo "deposit". An outbid bid returns to its
+    // bidder's balance the same way. Bidding on a legacy bundle row dissolves
+    // that auction instead of bidding on it.
+    auctionbid(bidder: string, auction_id: string, bid: string, taker_marketplace: string): EosioActionData[] {
+        return this._pack('auctionbid', {
+            bidder,
+            auction_id,
+            bid,
+            taker_marketplace
+        });
+    }
+
+    // Claimed by the winning bidder, who receives the assets, once the auction
+    // has ended. On a legacy bundle row the seller has not yet claimed, this
+    // dissolves the auction instead: the bid is refunded and the assets go back
+    // to the seller.
+    auctclaimbuy(auction_id: string): EosioActionData[] {
+        return this._pack('auctclaimbuy', {auction_id});
+    }
+
+    // Claimed by the seller, who receives the winning bid less the fees, once
+    // the auction has ended. An auction that ended without a bid is cancelled
+    // rather than claimed. On a legacy bundle row the buyer has not yet
+    // claimed, this dissolves the auction the same way auctclaimbuy does.
+    auctclaimsel(auction_id: string): EosioActionData[] {
+        return this._pack('auctclaimsel', {auction_id});
+    }
+
+    // Reads the auction and throws the transaction if its assets are not the
+    // ones asserted, writing nothing and requiring no authority. Pair it with
+    // auctionbid in one transaction the way assertsale pairs with purchasesale,
+    // so a bid cannot land on an auction that changed after it was read.
+    assertauct(auction_id: string, asset_ids_to_assert: string[]): EosioActionData[] {
+        return this._pack('assertauct', {
+            auction_id,
+            asset_ids_to_assert
+        });
+    }
+
+    // The buyoffer family. A buyoffer is an unsolicited bid on assets somebody
+    // else owns: the buyer escrows the price and the recipient accepts or
+    // declines it. Accepting is a composed flow, since the contract reads the
+    // AtomicAssets offers table rather than an offer id it is handed; see
+    // acceptBuyofferActions below.
+    //
+    // createbuyo spends the price from the buyer's balance inside the market
+    // contract, so it has to be funded first by a transfer with memo "deposit".
+    // buyer and recipient must be different accounts, a v2 buyoffer names
+    // exactly one asset, and memo is capped at 256 characters.
+    createbuyo(
+        buyer: string, recipient: string, price: string,
+        asset_ids: string[], memo: string, maker_marketplace: string
+    ): EosioActionData[] {
+        return this._pack('createbuyo', {
+            buyer,
+            recipient,
+            price,
+            asset_ids,
+            memo,
+            maker_marketplace
+        });
+    }
+
+    // Withdrawn by the buyer, whose escrowed price returns to their balance.
+    cancelbuyo(buyoffer_id: string): EosioActionData[] {
+        return this._pack('cancelbuyo', {buyoffer_id});
+    }
+
+    // Refused by the recipient, which likewise returns the escrowed price to
+    // the buyer's balance. decline_memo is capped at 256 characters and is the
+    // only thing that distinguishes this from the buyer cancelling.
+    declinebuyo(buyoffer_id: string, decline_memo: string): EosioActionData[] {
+        return this._pack('declinebuyo', {
+            buyoffer_id,
+            decline_memo
+        });
+    }
+
+    // The template-buyoffer family: a standing bid on any asset of a template
+    // rather than on one particular asset, which any holder of that template
+    // may fill. Filling it is a composed flow for the same offers-table reason
+    // accepting a buyoffer is; see fulfillTemplateBuyofferActions below.
+    //
+    // createtbuyo also spends the price from the buyer's market balance. Its
+    // template_id is a uint64 and passes through as a string, unlike the int32
+    // template_id the royalty actions carry: two different ABI types on
+    // different actions, and coercing this one would corrupt ids past 2^53.
+    createtbuyo(
+        buyer: string, price: string, collection_name: string,
+        template_id: string, maker_marketplace: string
+    ): EosioActionData[] {
+        return this._pack('createtbuyo', {
+            buyer,
+            price,
+            collection_name,
+            template_id,
+            maker_marketplace
+        });
+    }
+
+    // Withdrawn by the buyer, whose escrowed price returns to their balance.
+    // A template buyoffer has no recipient to decline it, so this is the only
+    // way one ends other than being fulfilled.
+    canceltbuyo(buyoffer_id: string): EosioActionData[] {
+        return this._pack('canceltbuyo', {buyoffer_id});
     }
 
     // The RAM actions require only the payer's own authority on chain; they
@@ -416,8 +612,120 @@ export class MarketActionBuilder {
         ];
     }
 
+    // The auction pair. Announcing writes an inactive row: nothing can be bid
+    // on an auction until its assets reach the market contract, and it is the
+    // transfer's on-notify handler, not announceauct, that flips the row
+    // active. Here the order is the contract's rather than this helper's, since
+    // that handler looks up an announced auction by its assets and seller and
+    // aborts when it finds none, so a transfer arriving first fails.
+    //
+    // An auction takes a transfer where a sale takes an offer, the assets going
+    // into the market contract's custody for the auction's whole duration
+    // rather than sitting in an offer until someone buys.
+    //
+    // Nothing about the auction is checked. Whether the starting bid's symbol
+    // is supported, whether the marketplace is registered, and whether the
+    // duration falls inside the config's bounds are all chain state this helper
+    // is not handed, and each refusal is a rejected transaction.
+    announceAuctionActions(input: AnnounceAuctionInput): EosioActionData[] {
+        return [
+            ...this.announceauct(
+                input.seller, input.asset_ids, input.starting_bid, input.duration, input.maker_marketplace
+            ),
+            new ActionBuilder(input.assets_contract).transfer(
+                input.seller, this.contract, input.asset_ids, 'auction'
+            )
+        ];
+    }
+
+    // Accepting a buyoffer and fulfilling a template buyoffer both consume an
+    // AtomicAssets offer that the contract identifies as the globally last
+    // created row of the offers table rather than by an id it is handed. So the
+    // offer has to be created in the same transaction, immediately before the
+    // market action, and no other createoffer may run between them: the
+    // contract would then read that offer instead, and every sender, asset,
+    // memo and return-assets check it makes would fail against it. Actions
+    // appended after the market action are safe, the inline acceptoffer having
+    // consumed the row by then.
+    //
+    // Neither helper accepts the offer itself. The market contract sends that
+    // acceptoffer inline, and a pre-accepted offer is gone from the table
+    // before the contract can find it.
+    //
+    // Both actions are signed by the account that also sends the offer: the
+    // buyoffer's recipient in one case and the seller in the other, which is
+    // why each input carries that account.
+    acceptBuyofferActions(input: AcceptBuyofferInput): EosioActionData[] {
+        // The one caller error in this family that commits rather than
+        // reverting. acceptbuyo on v2 returns early for a buyoffer row holding
+        // more than one asset id: it refunds the escrowed price to the buyer
+        // and erases the row before it ever reads the offers table. The
+        // transaction commits with the buyoffer gone, nothing sold, and the
+        // offer this helper created still sitting in the AtomicAssets offers
+        // table on the recipient's RAM, neither accepted nor declined, until
+        // they cancel it themselves. Bundle rows are ordinary buyoffers on a
+        // chain still running v1, which is what the opt-in is for.
+        if (input.asset_ids.length > 1 && !input.allow_v1_bundle_buyoffer) {
+            throw new Error(
+                `asset_ids carries ${input.asset_ids.length} ids and a buyoffer takes exactly one: `
+                + 'AtomicMarket v2 refunds a buyoffer of several assets and erases it without reading the offer, '
+                + 'leaving the offer this flow creates dangling in the AtomicAssets offers table. '
+                + 'Pass allow_v1_bundle_buyoffer to accept a bundle buyoffer on a chain still running AtomicMarket v1'
+            );
+        }
+
+        return [
+            new ActionBuilder(input.assets_contract).createoffer(
+                input.recipient, this.contract, input.asset_ids, [], 'buyoffer'
+            ),
+            ...this._pack('acceptbuyo', {
+                buyoffer_id: input.buyoffer_id,
+                expected_asset_ids: input.asset_ids,
+                expected_price: input.expected_price,
+                taker_marketplace: input.taker_marketplace
+            })
+        ];
+    }
+
+    // The template-buyoffer counterpart, on the same offers-table rule. It
+    // carries no bundle guard because a template buyoffer names one asset by
+    // construction: fulfilltbuyo takes a single asset_id and the contract
+    // checks the offer holds exactly that one asset.
+    fulfillTemplateBuyofferActions(input: FulfillTemplateBuyofferInput): EosioActionData[] {
+        return [
+            new ActionBuilder(input.assets_contract).createoffer(
+                input.seller, this.contract, [input.asset_id], [], 'tbuyoffer'
+            ),
+            ...this._pack('fulfilltbuyo', {
+                seller: input.seller,
+                buyoffer_id: input.buyoffer_id,
+                asset_id: input.asset_id,
+                expected_price: input.expected_price,
+                taker_marketplace: input.taker_marketplace
+            })
+        ];
+    }
+
     protected _pairs(recipients: RoyaltyRecipientInput[]): RoyaltyPair[] {
         return recipients.map(({recipient, weight}) => ({recipient, weight: Number(weight)}));
+    }
+
+    // The one uint32 field the new families carry. Number() reads a
+    // non-numeric string as NaN, which serializes as null and reaches a signing
+    // library as a field it cannot encode, so the value is checked before it is
+    // packed rather than after. Number.isInteger covers NaN and Infinity along
+    // with the fractional case, leaving the sign and the width to the bounds.
+    protected _uint32(field: string, value: number | string): number {
+        const parsed = Number(value);
+
+        if (!Number.isInteger(parsed) || parsed < 0 || parsed > 4294967295) {
+            throw new Error(
+                `${field} "${value}" is not a uint32: the ABI field takes a whole number `
+                + 'from 0 to 4294967295'
+            );
+        }
+
+        return parsed;
     }
 
     protected _pack(name: string, data: any): EosioActionData[] {
@@ -500,6 +808,76 @@ export class MarketActionGenerator {
         return this._authorize(authorization, this.builder.purchasesale(buyer, sale_id, intended_delphi_median, taker_marketplace));
     }
 
+    async announceauct(
+        authorization: EosioAuthorizationObject[], seller: string, asset_ids: string[],
+        starting_bid: string, duration: number | string, maker_marketplace: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.announceauct(seller, asset_ids, starting_bid, duration, maker_marketplace));
+    }
+
+    async cancelauct(
+        authorization: EosioAuthorizationObject[], auction_id: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.cancelauct(auction_id));
+    }
+
+    async auctionbid(
+        authorization: EosioAuthorizationObject[], bidder: string, auction_id: string,
+        bid: string, taker_marketplace: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.auctionbid(bidder, auction_id, bid, taker_marketplace));
+    }
+
+    async auctclaimbuy(
+        authorization: EosioAuthorizationObject[], auction_id: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.auctclaimbuy(auction_id));
+    }
+
+    async auctclaimsel(
+        authorization: EosioAuthorizationObject[], auction_id: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.auctclaimsel(auction_id));
+    }
+
+    async assertauct(
+        authorization: EosioAuthorizationObject[], auction_id: string, asset_ids_to_assert: string[]
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.assertauct(auction_id, asset_ids_to_assert));
+    }
+
+    async createbuyo(
+        authorization: EosioAuthorizationObject[], buyer: string, recipient: string,
+        price: string, asset_ids: string[], memo: string, maker_marketplace: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.createbuyo(buyer, recipient, price, asset_ids, memo, maker_marketplace));
+    }
+
+    async cancelbuyo(
+        authorization: EosioAuthorizationObject[], buyoffer_id: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.cancelbuyo(buyoffer_id));
+    }
+
+    async declinebuyo(
+        authorization: EosioAuthorizationObject[], buyoffer_id: string, decline_memo: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.declinebuyo(buyoffer_id, decline_memo));
+    }
+
+    async createtbuyo(
+        authorization: EosioAuthorizationObject[], buyer: string, price: string,
+        collection_name: string, template_id: string, maker_marketplace: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.createtbuyo(buyer, price, collection_name, template_id, maker_marketplace));
+    }
+
+    async canceltbuyo(
+        authorization: EosioAuthorizationObject[], buyoffer_id: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.canceltbuyo(buyoffer_id));
+    }
+
     async paysaleram(
         authorization: EosioAuthorizationObject[], payer: string, sale_id: string
     ): Promise<EosioActionObject[]> {
@@ -540,6 +918,24 @@ export class MarketActionGenerator {
         authorization: EosioAuthorizationObject[], input: AnnounceSaleInput
     ): Promise<EosioActionObject[]> {
         return this._authorize(authorization, this.builder.announceSaleActions(input));
+    }
+
+    async announceAuctionActions(
+        authorization: EosioAuthorizationObject[], input: AnnounceAuctionInput
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.announceAuctionActions(input));
+    }
+
+    async acceptBuyofferActions(
+        authorization: EosioAuthorizationObject[], input: AcceptBuyofferInput
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.acceptBuyofferActions(input));
+    }
+
+    async fulfillTemplateBuyofferActions(
+        authorization: EosioAuthorizationObject[], input: FulfillTemplateBuyofferInput
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.fulfillTemplateBuyofferActions(input));
     }
 
     protected _authorize(authorization: EosioAuthorizationObject[], actions: EosioActionData[]): EosioActionObject[] {

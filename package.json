@@ -1,6 +1,6 @@
 {
   "name": "@atomichub/atomicmarket",
-  "description": "JavaScript/TypeScript SDK for the AtomicMarket NFT marketplace contract on Antelope chains: read sales, auctions, and royalties, and build sale, RAM-payment, and v2 royalty actions",
+  "description": "JavaScript/TypeScript SDK for the AtomicMarket NFT marketplace contract on Antelope chains: read sales, auctions, and royalties, and build sale, auction, buyoffer, template-buyoffer, RAM-payment, and v2 royalty actions",
   "keywords": [
     "atomicmarket",
     "atomicassets",
