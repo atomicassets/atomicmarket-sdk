@@ -5,15 +5,22 @@ import {
     MarketActionBuilder, MarketActionGenerator, PurchaseSaleInput
 } from '../src';
 
+// One asset id, which is every sale a v2 chain holds: announcesale writes no
+// other shape. The bundle fixture below is the legacy row that predates it.
 const plainSale: PurchaseSaleInput = {
     buyer: 'buyeracct111',
     sale_id: '42',
-    asset_ids: ['1099511627776', '1099511627777'],
+    asset_ids: ['1099511627776'],
     listing_price: '100.00000000 WAX',
     settlement_symbol: '8,WAX',
     intended_delphi_median: '0',
     token_contract: 'eosio.token',
     taker_marketplace: 'mymarketacct'
+};
+
+const bundleSale: PurchaseSaleInput = {
+    ...plainSale,
+    asset_ids: ['1099511627776', '1099511627777']
 };
 
 // A delphi sale lists in USD and settles in WAX at the oracle median, so its
@@ -27,7 +34,7 @@ const delphiSale: PurchaseSaleInput = {
 
 const listing: AnnounceSaleInput = {
     seller: 'selleracct11',
-    asset_ids: ['1099511627776', '1099511627777'],
+    asset_ids: ['1099511627776'],
     listing_price: '100.00000000 WAX',
     settlement_symbol: '8,WAX',
     maker_marketplace: 'mymarketacct',
@@ -406,13 +413,14 @@ describe('MarketActionBuilder composed sale flows', () => {
     });
 
     it('a supplied settlement_quantity reaches the transfer verbatim and changes no other action', () => {
-        const plain = builder.purchaseSaleActions({...plainSale, listing_price: '1.00 USD'});
         const delphi = builder.purchaseSaleActions(delphiSale);
+        const otherQuantity = builder.purchaseSaleActions({...delphiSale, settlement_quantity: '1.00000000 WAX'});
 
         expect(delphi[1].data.quantity).to.equal('24.93765586 WAX');
-        expect(delphi[0]).to.deep.equal(plain[0]);
+        expect(otherQuantity[1].data.quantity).to.equal('1.00000000 WAX');
+        expect(delphi[0]).to.deep.equal(otherQuantity[0]);
         expect(delphi[2].data.intended_delphi_median).to.equal('401');
-        expect({...delphi[2].data, intended_delphi_median: '0'}).to.deep.equal(plain[2].data);
+        expect(delphi[2]).to.deep.equal(otherQuantity[2]);
     });
 
     it('assertsale carries sale_id unsuffixed and the asserted terms in their *_to_assert fields', () => {
@@ -423,7 +431,7 @@ describe('MarketActionBuilder composed sale flows', () => {
             name: 'assertsale',
             data: {
                 sale_id: '42',
-                asset_ids_to_assert: ['1099511627776', '1099511627777'],
+                asset_ids_to_assert: ['1099511627776'],
                 listing_price_to_assert: '100.00000000 WAX',
                 settlement_symbol_to_assert: '8,WAX'
             }
@@ -445,20 +453,13 @@ describe('MarketActionBuilder composed sale flows', () => {
         });
     });
 
-    it('a delphi median with no settlement_quantity throws, naming settlement_quantity', () => {
-        const withoutQuantity: PurchaseSaleInput = {...plainSale, listing_price: '1.00 USD', intended_delphi_median: '401'};
-
-        expect(() => builder.purchaseSaleActions(withoutQuantity)).to.throw(/settlement_quantity/);
-    });
-
     it('uint64 values above 2^53 survive verbatim through sale_id, asset_ids and intended_delphi_median', () => {
         const max = '18446744073709551615';
         const actions = builder.purchaseSaleActions({
-            ...plainSale,
+            ...delphiSale,
             sale_id: max,
             asset_ids: [max],
-            intended_delphi_median: max,
-            settlement_quantity: '100.00000000 WAX'
+            intended_delphi_median: max
         });
 
         expect(actions[0].data.sale_id).to.equal(max);
@@ -476,7 +477,7 @@ describe('MarketActionBuilder composed sale flows', () => {
                 name: 'announcesale',
                 data: {
                     seller: 'selleracct11',
-                    asset_ids: ['1099511627776', '1099511627777'],
+                    asset_ids: ['1099511627776'],
                     listing_price: '100.00000000 WAX',
                     settlement_symbol: '8,WAX',
                     maker_marketplace: 'mymarketacct'
@@ -488,12 +489,180 @@ describe('MarketActionBuilder composed sale flows', () => {
                 data: {
                     sender: 'selleracct11',
                     recipient: contract,
-                    sender_asset_ids: ['1099511627776', '1099511627777'],
+                    sender_asset_ids: ['1099511627776'],
                     recipient_asset_ids: [],
                     memo: 'sale'
                 }
             }
         ]);
+    });
+});
+
+// purchaseSaleActions checks the one pairing whose failure is a wrong payment
+// rather than a rejected transaction, and it reads the contract's own
+// discriminator to know which sale it is looking at: whether listing_price and
+// settlement_symbol name a single symbol, precision and code both. What that
+// classification must not reject is as much of this as what it rejects, since a
+// sale settling a symbol it never priced in is meant to name two symbols and
+// two amounts.
+describe('MarketActionBuilder composed-flow guards', () => {
+    const contract = 'atomicmarket';
+    const builder = new MarketActionBuilder(contract);
+    const generator = new MarketActionGenerator(contract);
+    const authorization: EosioAuthorizationObject[] = [{actor: 'buyer', permission: 'active'}];
+
+    // Same code, different precision, which is a different symbol on chain and
+    // reaches the registered-pair lookup exactly as a USD listing does.
+    const differingPrecision: PurchaseSaleInput = {...plainSale, settlement_symbol: '4,WAX'};
+
+    it('a sale settling the symbol it priced in accepts a settlement_quantity equal to listing_price and deposits it', () => {
+        const actions = builder.purchaseSaleActions({...plainSale, settlement_quantity: '100.00000000 WAX'});
+
+        expect(actions[1].data.quantity).to.equal('100.00000000 WAX');
+    });
+
+    it('a settlement_quantity diverging from listing_price on that sale throws, naming both amounts', () => {
+        const diverging: PurchaseSaleInput = {...plainSale, settlement_quantity: '1.00000000 WAX'};
+
+        expect(() => builder.purchaseSaleActions(diverging)).to.throw(/settlement_quantity/);
+        expect(() => builder.purchaseSaleActions(diverging)).to.throw(/1\.00000000 WAX/);
+        expect(() => builder.purchaseSaleActions(diverging)).to.throw(/100\.00000000 WAX/);
+    });
+
+    it('a nonzero intended_delphi_median on that sale throws, mirroring the contract requiring zero there', () => {
+        const withMedian: PurchaseSaleInput = {...plainSale, intended_delphi_median: '401'};
+
+        expect(() => builder.purchaseSaleActions(withMedian)).to.throw(/intended_delphi_median/);
+        expect(() => builder.purchaseSaleActions(withMedian)).to.throw(/401/);
+        expect(() => builder.purchaseSaleActions(withMedian)).to.throw(/8,WAX/);
+    });
+
+    it('omitting settlement_quantity on that sale stays accepted, the listing price being what settles', () => {
+        expect(() => builder.purchaseSaleActions(plainSale)).to.not.throw();
+    });
+
+    it('a sale listing one symbol and settling another is not compared against listing_price', () => {
+        expect(() => builder.purchaseSaleActions(delphiSale)).to.not.throw();
+        expect(builder.purchaseSaleActions(delphiSale)[1].data.quantity).to.equal('24.93765586 WAX');
+    });
+
+    it('a settlement_symbol differing from the price in precision alone is one of those sales, not a mismatch', () => {
+        const settled: PurchaseSaleInput = {...differingPrecision, settlement_quantity: '100.0000 WAX'};
+
+        expect(() => builder.purchaseSaleActions(settled)).to.not.throw();
+        expect(builder.purchaseSaleActions(settled)[1].data.quantity).to.equal('100.0000 WAX');
+        expect(() => builder.purchaseSaleActions({...settled, intended_delphi_median: '401'})).to.not.throw();
+    });
+
+    it('and therefore takes a settlement_quantity, the error naming both fields', () => {
+        expect(() => builder.purchaseSaleActions(differingPrecision)).to.throw(/settlement_quantity/);
+        expect(() => builder.purchaseSaleActions(differingPrecision)).to.throw(/4,WAX/);
+        expect(() => builder.purchaseSaleActions(differingPrecision)).to.throw(/100\.00000000 WAX/);
+    });
+
+    it('a precision-0 sale settles the symbol it priced in, its price carrying no decimal point', () => {
+        const zeroPrecision: PurchaseSaleInput = {...plainSale, listing_price: '100 CREDIT', settlement_symbol: '0,CREDIT'};
+
+        expect(() => builder.purchaseSaleActions({...zeroPrecision, settlement_quantity: '100 CREDIT'})).to.not.throw();
+        expect(() => builder.purchaseSaleActions({...zeroPrecision, settlement_quantity: '99 CREDIT'})).to.throw(/99 CREDIT/);
+        expect(() => builder.purchaseSaleActions({...zeroPrecision, settlement_symbol: '2,CREDIT'})).to.throw(/settlement_quantity/);
+    });
+
+    it('a notation neither reader can parse is not shown to name one symbol, so it takes a settlement_quantity', () => {
+        const unparseable: PurchaseSaleInput = {...plainSale, listing_price: 'free'};
+
+        expect(() => builder.purchaseSaleActions(unparseable)).to.throw(/settlement_quantity/);
+        expect(() => builder.purchaseSaleActions({...unparseable, settlement_quantity: '100.00000000 WAX'})).to.not.throw();
+    });
+
+    it('a settlement_quantity in a symbol other than settlement_symbol throws, naming both', () => {
+        const wrongSymbol: PurchaseSaleInput = {...delphiSale, settlement_quantity: '24.93765586 USD'};
+
+        expect(() => builder.purchaseSaleActions(wrongSymbol)).to.throw(/settlement_quantity/);
+        expect(() => builder.purchaseSaleActions(wrongSymbol)).to.throw(/24\.93765586 USD/);
+        expect(() => builder.purchaseSaleActions(wrongSymbol)).to.throw(/8,WAX/);
+    });
+
+    it('and a settlement_quantity at the settlement symbol\'s code but not its precision is one of those', () => {
+        // An Antelope symbol is precision and code together, so a quantity
+        // carrying four decimals is not '8,WAX' and the deposit credits a
+        // balance the purchase never reaches.
+        const wrongPrecision: PurchaseSaleInput = {...delphiSale, settlement_quantity: '24.9376 WAX'};
+
+        expect(() => builder.purchaseSaleActions(wrongPrecision)).to.throw(/24\.9376 WAX/);
+        expect(() => builder.purchaseSaleActions({...delphiSale, settlement_quantity: 'free'})).to.throw(/settlement_quantity/);
+    });
+
+    it('a purchase of several assets throws, that transaction committing rather than reverting', () => {
+        expect(() => builder.purchaseSaleActions(bundleSale)).to.throw(/asset_ids carries 2 ids/);
+        expect(() => builder.purchaseSaleActions(bundleSale)).to.throw(/allow_v1_bundle_sale/);
+    });
+
+    it('allow_v1_bundle_sale builds it anyway, for a chain still running v1', () => {
+        const actions = builder.purchaseSaleActions({...bundleSale, allow_v1_bundle_sale: true});
+
+        expect(actions).to.have.lengthOf(3);
+        expect(actions[0].data.asset_ids_to_assert).to.deep.equal(['1099511627776', '1099511627777']);
+        expect(actions[1].data.quantity).to.equal('100.00000000 WAX');
+    });
+
+    it('the bundle check reads the ids alone, before either symbol branch', () => {
+        // A bundle whose other fields are the ones that would throw anyway,
+        // so the error a caller sees is the one that costs them money.
+        const both: PurchaseSaleInput = {...bundleSale, settlement_symbol: '4,WAX'};
+
+        expect(() => builder.purchaseSaleActions(both)).to.throw(/asset_ids/);
+        expect(() => builder.purchaseSaleActions(both)).to.not.throw(/settlement_quantity is required/);
+    });
+
+    it('one asset id and none at all both pass the bundle check, an empty purchase only being refused on chain', () => {
+        expect(() => builder.purchaseSaleActions(plainSale)).to.not.throw();
+        expect(() => builder.purchaseSaleActions({...plainSale, asset_ids: []})).to.not.throw();
+    });
+
+    it('announceSaleActions builds every listing it is handed, supported symbols and pairs being chain state', () => {
+        const listings: AnnounceSaleInput[] = [
+            listing,
+            {...listing, settlement_symbol: '4,WAX'},
+            {...listing, listing_price: '30.00 USD', settlement_symbol: '8,WAX'},
+            {...listing, listing_price: 'free'},
+            {...listing, settlement_symbol: 'WAX'},
+            // A bundle listing, which v2's announcesale refuses outright. That
+            // refusal is a rejected transaction rather than a wrong payment,
+            // so it stays on the chain's side of the line.
+            {...listing, asset_ids: ['1099511627776', '1099511627777']}
+        ];
+
+        for (const candidate of listings) {
+            const [announcesale] = builder.announceSaleActions(candidate);
+
+            expect(announcesale.data.listing_price).to.equal(candidate.listing_price);
+            expect(announcesale.data.settlement_symbol).to.equal(candidate.settlement_symbol);
+        }
+    });
+
+    it('the guard holds on the async generator surface, where announcing rejects nothing', async () => {
+        const messages: string[] = [];
+
+        for (const attempt of [
+            generator.purchaseSaleActions(authorization, {...plainSale, settlement_quantity: '1.00000000 WAX'}),
+            generator.announceSaleActions(authorization, {...listing, settlement_symbol: '4,WAX'})
+        ]) {
+            try {
+                await attempt;
+                messages.push('resolved');
+            } catch (error) {
+                messages.push((error as Error).message);
+            }
+        }
+
+        expect(messages[0]).to.match(/settlement_quantity/);
+        expect(messages[1]).to.equal('resolved');
+    });
+
+    it('the guard leaves every already-valid composed flow byte-identical', async () => {
+        expect(builder.purchaseSaleActions(plainSale)).to.have.lengthOf(3);
+        expect(await generator.announceSaleActions(authorization, listing)).to.have.lengthOf(2);
     });
 });
 

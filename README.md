@@ -110,6 +110,8 @@ const attributeRules = await api.getRoyaltyAttributeRules('mycollection');
 
 Reading needs no signing. To change a collection's royalty split, this SDK builds the action objects and hands them to whatever signing library you already use. It does not sign or broadcast anything itself.
 
+The six royalty actions arrived with v2. A chain still running AtomicMarket v1 carries none of them in its ABI, so on such a chain a signing library cannot serialize what these builders return, let alone submit it.
+
 ```ts
 import { MarketActionBuilder } from '@atomichub/atomicmarket';
 
@@ -124,7 +126,9 @@ const actions = builder.setroyalconf('mycollection', {
 });
 ```
 
-Splits are basis points, so those three are 50 percent, 25 percent, and 25 percent. The result plugs into a signing library such as [WharfKit](https://wharfkit.com/):
+Those three numbers are relative weights, not basis points and not percentages. At settlement each asset is weighed against only the categories that have a payee for it, and the weights are renormalized across those, so that no share is stranded. The 5000/2500/2500 above pays founders two thirds and the template one third on an asset that has a template royalty row and matches no attribute rule, and pays founders the entire fee on an asset with neither. Where no category has a payee, the whole share goes to the collection author.
+
+The result plugs into a signing library such as [WharfKit](https://wharfkit.com/):
 
 ```ts
 await session.transact({
@@ -177,9 +181,13 @@ const listing = builder.announceSaleActions({
 
 Announcing alone lists nothing and offering alone leaves the assets in an offer nobody accepts, so the two belong in one transaction.
 
+A v2 listing holds exactly one asset. `announcesale` rejects any other size and asks for one sale per asset instead, which one transaction can announce several of. A chain still running v1 takes bundle listings, and this helper builds whatever it is handed either way, since a refused listing is a rejected transaction and nothing is lost to it.
+
+Nothing about the symbols is checked here. `announcesale` takes a listing whose `settlement_symbol` is its price's own symbol if that symbol is a supported token, and one whose settlement symbol is anything else if the two are a registered pair, so both readings are legitimate and which one your listing gets is chain state this helper is not handed.
+
 ### Buying a sale
 
-`purchaseSaleActions` returns the purchase triple in the one order the contract accepts: `assertsale` pinning the terms you expect to buy, a transfer with memo `deposit` crediting the market contract, then `purchasesale` spending that credit.
+`purchaseSaleActions` returns the purchase triple: `assertsale` pinning the terms you expect to buy, a transfer with memo `deposit` crediting the market contract, then `purchasesale` spending that credit. Only the purchase's place is fixed, since it spends the deposited balance and erases the sale row the assertion reads; the assertion writes nothing, so a transaction assembling itself from the raw builders may equally deposit first.
 
 ```ts
 const purchase = builder.purchaseSaleActions({
@@ -194,13 +202,17 @@ const purchase = builder.purchaseSaleActions({
 });
 ```
 
-The deposit is a token transfer rather than an AtomicMarket action, which is why the helper needs `token_contract`. `assertsale` is what makes the triple safe to sign: if the sale changed between reading it and the transaction landing, the assertion fails and nothing moves.
+The deposit is a token transfer rather than an AtomicMarket action, which is why the helper needs `token_contract`. `assertsale` is what makes the triple safe against a sale that changed between reading it and the transaction landing: if the ids, the price, or the settlement symbol have moved, the assertion fails and nothing does.
 
-`intended_delphi_median` is `'0'` for a sale listed directly in its settlement token, and that is the whole story for most sales.
+It does not cover a sale of several assets. `purchasesale` on v2 returns early for such a row, declining the offer and erasing the listing before it reaches a balance, while `assertsale` passes on the very ids that made it return and the deposit has already credited the buyer. The transaction commits, and the buyer has paid for nothing and must `withdraw` to get the tokens back. So `purchaseSaleActions` throws on more than one `asset_ids` entry. Bundles are ordinary listings on a chain still running v1, where they purchase correctly, and `allow_v1_bundle_sale: true` is the opt-out for buying one there.
+
+`intended_delphi_median` is `'0'` for a sale listed directly in its settlement token, and that is the whole story for most sales. The contract settles such a sale at its listing price, so `settlement_quantity` may be omitted; supplying it is fine, and common, but it must then equal `listing_price` exactly, since the deposit is what funds the purchase and the purchase spends the listed amount whatever you deposited.
+
+A sale is that one exactly when `settlement_symbol` is `listing_price`'s own symbol, which means the precision as well as the code: `'100.00000000 WAX'` settles `'8,WAX'`, and the same price against `'4,WAX'` names two different symbols and settles through the oracle like any other pair.
 
 ### Delphi-priced sales
 
-A sale can be listed in one currency and settled in another at the delphioracle rate, which is what a non-zero `intended_delphi_median` means. Its two price fields then describe two different symbols: `listing_price` is what the seller asked in the listing currency, and the buyer deposits what that converts to at the median. `assertsale` pins the listing terms only, so no on-chain check stands behind the deposit amount, which makes deriving it the step worth getting right.
+A sale can be listed in one currency and settled in another at the delphioracle rate, which is what a `settlement_symbol` other than the listing price's own symbol means, and what a non-zero `intended_delphi_median` accompanies. Its two price fields then describe two different symbols: `listing_price` is what the seller asked in the listing currency, and the buyer deposits what that converts to at the median. `assertsale` pins the listing terms only, so no on-chain check stands behind the deposit amount, which makes deriving it the step worth getting right.
 
 `getConfig` carries the pair, `deriveSettlementAmount` converts, and `formatQuantity` renders the result as the quantity string the transfer takes:
 
@@ -246,8 +258,19 @@ const settlement = deriveSettlementAmount(BigInt(sale.listing_price), BigInt(sal
 
 // Whoever serves getConfig also controls the numbers deriveSettlementAmount
 // works from, so the amount it derives and the amount this same response
-// separately reports must agree before either is trusted.
-if (!/^\d+$/.test(sale.price.amount) || BigInt(sale.price.amount) !== settlement) {
+// separately reports should agree before either is trusted. An indexer
+// converts in its own arithmetic rather than the contract's, and the two can
+// drift by the last place of the contract's double: one raw unit at ordinary
+// magnitudes, proportionally more past 2^53. Anything wider than that is a
+// disagreement rather than rounding, and a reason to stop.
+const reported = /^\d+$/.test(sale.price.amount) ? BigInt(sale.price.amount) : undefined;
+const drift = reported === undefined ? undefined
+    : settlement > reported ? settlement - reported : reported - settlement;
+
+// One raw unit, widened by the spacing of doubles at this magnitude.
+const tolerance = 1n + settlement / 2n ** 52n;
+
+if (drift === undefined || drift > tolerance) {
     throw new Error(`sale ${sale.sale_id}: price.amount ${sale.price.amount} does not match the median-derived expectation ${settlement.toString()} for listing_price ${sale.listing_price} ${sale.listing_symbol} at median ${sale.price.median}`);
 }
 
@@ -264,13 +287,38 @@ const purchase = builder.purchaseSaleActions({
 });
 ```
 
-Amounts on the wire are raw integers in their symbol's smallest unit, and the derivation stays in `BigInt` with a single floor, so it lands on the same integer the contract's own conversion produces rather than a value that drifts by a unit at large magnitudes. `invert_delphi_pair` says which way the underlying price feed is oriented, and it is the reason the listing precision is read off the matching side of the feed rather than assumed.
+Amounts on the wire are raw integers in their symbol's smallest unit, and `deriveSettlementAmount` returns the integer the contract charges rather than the exact quotient of those integers. The two are not always the same one. The contract divides and scales in double-precision floating point and truncates the result, so on the WAX/USD pair it lands one raw unit above the exact floor on a small fraction of listing amounts from about $12,124 up, and a deposit derived from the exact floor is then a unit short of what the purchase spends. The derivation reproduces the contract's arithmetic operation for operation so that the amount you deposit is the amount that is taken.
 
-`settlement_quantity` is required whenever `intended_delphi_median` is not `'0'`. Without it the helper would deposit the listing price, which on a delphi sale is an amount in the wrong currency, so it throws instead.
+Two cases have no amount to reproduce and throw instead. A pair whose exponent works out negative, meaning the settlement symbol carries fewer decimals than the median and listing symbols together call for, is one the contract cannot convert at all: it computes that exponent in unsigned arithmetic, where a negative one becomes an enormous positive one and the conversion overflows. And a result at or past 2^64 has no integer for the contract to charge. Past 2^53 the derivation keeps returning values, with the caveat that the contract's own double no longer represents the quotient exactly there, so the amount charged can sit some way off it in either direction; that is the contract's arithmetic, and matching it is the point.
+
+`invert_delphi_pair` says which way the underlying price feed is oriented, and it is the reason the listing precision is read off the matching side of the feed rather than assumed.
+
+`settlement_quantity` is required whenever `settlement_symbol` is not the listing price's own symbol, and it must be denominated in that settlement symbol. Without it the helper would deposit the listing price, which on such a sale is an amount in the wrong currency; with a quantity in some third symbol the deposit credits a balance the purchase never spends, while the real settlement amount is drawn from whatever the buyer already holds in the right one. Both throw.
 
 ### What the builders validate
 
-Almost nothing, deliberately. These are composition helpers over values you already trust: they emit what you hand them, and checking a sale you read from an API is your side of that line. Two exceptions exist because their failure is a wrong payment rather than a rejected transaction: the missing `settlement_quantity` above, and the delphi utilities rejecting a non-positive median or a precision outside the 0 to 18 the chain allows, naming the field in the error. Bound anything else you read from a response before you trust it.
+Almost nothing, deliberately. These are composition helpers over values you already trust: they emit what you hand them, and checking a sale you read from an API is your side of that line. The exceptions all share one property, that their failure is a wrong payment rather than a rejected transaction, and each names the offending values in the error:
+
+- `purchaseSaleActions` throws on more than one entry in `asset_ids`, unless `allow_v1_bundle_sale` says the chain is still on v1.
+- `purchaseSaleActions` requires `settlement_quantity`, denominated in `settlement_symbol`, when that symbol is not the listing price's own; and when it is, requires a supplied one to equal `listing_price` and `intended_delphi_median` to be `'0'`.
+- The delphi utilities reject a non-positive median, a precision outside the 0 to 18 the chain allows, and a pair the contract's own conversion cannot compute.
+
+The symbol checks turn on the discriminator the contract itself uses, whether the sale's two symbol fields name a single symbol, precision and code both.
+
+Two of them do foreclose a purchase the chain would have taken, deliberately. Requiring a supplied `settlement_quantity` to equal `listing_price` rules out depositing more than the sale costs, which the chain accepts and leaves as balance. Requiring one at all on the oracle branch rules out depositing nothing and letting a standing balance pay, which the chain also accepts. Both are legitimate for a caller who means them and indistinguishable from a wrong amount for one who does not, and the helper cannot see a balance to tell them apart. If you want either, assemble the transaction from `assertsale`, your own transfer, and `purchasesale` on the builder, which assert nothing.
+
+Nothing here reads chain state. Whether a symbol is supported, and whether a pairing of two is registered, is chain state, which is why `announceSaleActions` checks nothing at all and why the settlement amount an oracle-settled sale deposits goes unchecked here, the helper never being handed the pair it derives from. Bound anything else you read from a response before you trust it.
+
+## What's new in 2.3.0
+
+Breaking, and worth reading before upgrading: `deriveSettlementAmount` returns a different integer for some inputs, and `purchaseSaleActions` rejects input it used to build.
+
+- `deriveSettlementAmount` reproduces the contract's own conversion rather than the exact quotient. Where the contract's double arithmetic lands a raw unit above the exact floor, so does this, because that unit is the difference between a deposit that funds the purchase and one that leaves it short. A pair whose exponent works out negative, and a result at or past 2^64, now throw: the contract has no defined answer for either.
+- `purchaseSaleActions` throws on more than one `asset_ids` entry. On v2 that transaction commits with the buyer charged and nothing delivered, rather than reverting. `allow_v1_bundle_sale` opts out for a chain still running v1, where bundles are ordinary listings.
+- `purchaseSaleActions` requires the cross-symbol branch's `settlement_quantity` to be denominated in `settlement_symbol`, the same wrong-payment check the plain branch already made.
+- `purchaseSaleActions` keys its checks on the contract's settlement discriminator, full symbol equality between `listing_price` and `settlement_symbol`, so a settlement symbol differing from the price in precision alone settles through the oracle rather than reading as a mismatch.
+- On a sale settling the symbol it priced in, a supplied `settlement_quantity` must equal `listing_price` and `intended_delphi_median` must be `'0'`.
+- `sideEffects: false`, matching the sibling atomicassets package, so bundlers may drop the package from builds that import nothing from it.
 
 ## What's new in 2.2.1
 
