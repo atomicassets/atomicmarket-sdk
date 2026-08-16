@@ -8,8 +8,9 @@ export { AtomicMarketApi, MarketActionBuilder, MarketActionGenerator, ApiError }
 // constants. EosioActionObject/EosioAuthorizationObject are re-exports of the
 // @atomichub/atomicassets types.
 export {
-    AnnounceSaleInput, AtomicMarketActionName, AtomicMarketActions, AttributeRoyaltyValue,
-    EosioActionData, EosioActionObject, EosioAuthorizationObject, PurchaseSaleInput,
+    AcceptBuyofferInput, AnnounceAuctionInput, AnnounceSaleInput, AtomicMarketActionName,
+    AtomicMarketActions, AttributeRoyaltyValue, EosioActionData, EosioActionObject,
+    EosioAuthorizationObject, FulfillTemplateBuyofferInput, PurchaseSaleInput,
     RoyaltyConfigInput, RoyaltyPair, RoyaltyRecipientInput
 } from './Actions/Generator';
 
