@@ -1,8 +1,8 @@
 import { AssetsApiParams, ILog, TransferApiParams } from '@atomichub/atomicassets';
 
 import ApiError from '../../Errors/ApiError';
-import { AuctionApiParams, BaseAssetFilterParams, BuyofferApiParams, MarketOfferApiParams, SaleApiParams } from './Params';
-import { IAuction, IBuyoffer, IMarketAsset, IMarketConfig, IMarketOffer, IMarketplace, IMarketToken, IMarketTransfer, IPriceStats, IRoyaltyAttributeRule, IRoyaltyConfig, IRoyaltyTemplateRule, ISale } from './Objects';
+import { AuctionApiParams, BaseAssetFilterParams, BuyofferApiParams, MarketOfferApiParams, RoyaltyAccountApiParams, RoyaltyPayoutApiParams, SaleApiParams } from './Params';
+import { IAuction, IBuyoffer, IMarketAsset, IMarketConfig, IMarketOffer, IMarketplace, IMarketToken, IMarketTransfer, IPriceStats, IRoyaltyAccountTotal, IRoyaltyAttributeRule, IRoyaltyConfig, IRoyaltyPayout, IRoyaltyTemplateRule, ISale } from './Objects';
 
 type Fetch = typeof fetch;
 type ApiArgs = { fetch?: Fetch };
@@ -132,6 +132,25 @@ export default class AtomicMarketApi {
 
     async getRoyaltyAttributeRules(collection: string, page: number = 1, limit: number = 100): Promise<IRoyaltyAttributeRule[]> {
         return await this.fetchEndpoint('/v1/royalties/' + encodeURIComponent(collection) + '/attributes', {page, limit});
+    }
+
+    // The settled payout ledger, newest first, one row for each entry in a
+    // settlement log's payout vector. A chain still running AtomicMarket v1 logs no payouts, so
+    // there the route answers an empty array rather than an error. An indexer
+    // built before the royalty routes answers 404, which arrives as an
+    // ApiError and is a different case from the 416 above.
+    async getRoyaltyPayouts(options: RoyaltyPayoutApiParams = {}, page: number = 1, limit: number = 100): Promise<IRoyaltyPayout[]> {
+        return await this.fetchEndpoint('/v1/royalties/payouts', {page, limit, ...options});
+    }
+
+    async countRoyaltyPayouts(options: RoyaltyPayoutApiParams = {}): Promise<number> {
+        return await this.countEndpoint('/v1/royalties/payouts', options);
+    }
+
+    // What one account has been paid, one row per token symbol. An account
+    // paid in two tokens returns two rows, and one never paid returns none.
+    async getRoyaltyAccount(account: string, options: RoyaltyAccountApiParams = {}): Promise<IRoyaltyAccountTotal[]> {
+        return await this.fetchEndpoint('/v1/royalties/accounts/' + encodeURIComponent(account), options);
     }
 
     /* PRICE API */

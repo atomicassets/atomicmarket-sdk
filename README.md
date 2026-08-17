@@ -106,6 +106,29 @@ const templateRules = await api.getRoyaltyTemplateRules('mycollection');
 const attributeRules = await api.getRoyaltyAttributeRules('mycollection');
 ```
 
+What the collection has actually paid is a separate read. The indexer keeps one ledger row for every royalty the contract settled, and aggregates one account's rows per token:
+
+```ts
+const payouts = await api.getRoyaltyPayouts({
+    collection_name: 'mycollection',
+    recipient: 'founderacct1',
+    category: 'template'
+}, 1, 100);
+
+const settled = await api.countRoyaltyPayouts({collection_name: 'mycollection'});
+
+// one row per token symbol the account has been paid in
+const earned = await api.getRoyaltyAccount('founderacct1');
+```
+
+`amount` is in raw token units, so read it against the `token_precision` of the same row: `5000000` at precision 8 is `0.05000000 WAX`. The same holds for the `amount` on a `getRoyaltyAccount` row, which sums the payouts the filters admit, and its `payout_count` is a decimal string rather than a number.
+
+`category` names the rule that paid, one of `founders`, `template`, `attribute`, or `dust`, and it tells you which linkage the row carries: a template payout sets `template_id`, an attribute payout sets `rule_id`, and a founders or dust payout sets neither. A dust row is the rounding remainder plus the author fallback, paid to the collection author, and it names no asset either. `listing_id` is null when `listing_type` is `unresolved`, which is the row the indexer keeps when it cannot trace a settlement back to the listing that triggered it. A row whose stored value falls outside the vocabulary this SDK serves reads null for both `listing_type` and `category`.
+
+The ledger pages like the listing routes. It sorts newest first by default, takes `sort` of `created` or `amount`, `order` of `asc` or `desc`, a `limit` up to 100, and `lower_bound`, `upper_bound`, or `ids` over `log_global_sequence`. `RoyaltyListingType`, `RoyaltyPayoutCategory`, and `RoyaltyPayoutSort` are exported for the filter values.
+
+On a chain still running AtomicMarket v1 the contract logs no payouts and configures no royalties, so the ledger reads empty, the count is zero, and every collection answers `getRoyaltyConfig` with null. An indexer built before the royalty routes existed is a different case: it answers 404, which arrives as an `ApiError` with `status` 404 from every one of these methods. Only the HTTP 416 that `getRoyaltyConfig` receives for a collection with no royalty config becomes null; the ledger and count routes return empty results instead, never null.
+
 ## Writing royalty configuration
 
 Reading needs no signing. To change a collection's royalty split, this SDK builds the action objects and hands them to whatever signing library you already use. It does not sign or broadcast anything itself.
@@ -403,6 +426,20 @@ The symbol checks turn on the discriminator the contract itself uses, whether th
 Two of them do foreclose a purchase the chain would have taken, deliberately. Requiring a supplied `settlement_quantity` to equal `listing_price` rules out depositing more than the sale costs, which the chain accepts and leaves as balance. Requiring one at all on the oracle branch rules out depositing nothing and letting a standing balance pay, which the chain also accepts. Both are legitimate for a caller who means them and indistinguishable from a wrong amount for one who does not, and the helper cannot see a balance to tell them apart. If you want either, assemble the transaction from `assertsale`, your own transfer, and `purchasesale` on the builder, which assert nothing.
 
 Nothing here reads chain state. Whether a symbol is supported, and whether a pairing of two is registered, is chain state, which is why `announceSaleActions` checks nothing at all and why the settlement amount an oracle-settled sale deposits goes unchecked here, the helper never being handed the pair it derives from. Bound anything else you read from a response before you trust it.
+
+## What's new in 2.4.0
+
+Reads the settled royalty ledger, so a consumer no longer has to page the payout logs itself.
+
+### Breaking changes
+
+- `IRoyaltyConfig`, `IRoyaltyTemplateRule`, and `IRoyaltyAttributeRule` gain required `market_contract`, `collection_name`, and timestamp fields, and the attribute rule gains `lookup_hash`. Reading a response is unaffected. Code that builds one of these rows by hand, such as a test mock, must supply the added fields. (#23)
+
+### Features
+
+- `getRoyaltyPayouts`, `countRoyaltyPayouts`, and `getRoyaltyAccount` cover the AtomicMarket v2 payout ledger: every settled royalty, the count behind it, and one account's totals per token symbol. Payout filters travel as `RoyaltyPayoutApiParams`, whose primary boundary ranges over `log_global_sequence`. The account totals take the date window alone, because that route groups the boundary column away. (#23)
+- `IRoyaltyPayout` and `IRoyaltyAccountTotal` type the two new row shapes, and `RoyaltyListingType`, `RoyaltyPayoutCategory`, and `RoyaltyPayoutSort` pin the strings the indexer serves and filters on. (#23)
+- `IRoyaltyConfig`, `IRoyaltyTemplateRule`, and `IRoyaltyAttributeRule` carry the `market_contract`, `collection_name`, and four timestamps of their rows, and the attribute rule also carries its `lookup_hash`. (#23)
 
 ## What's new in 2.3.0
 

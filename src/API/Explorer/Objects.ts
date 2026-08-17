@@ -1,6 +1,6 @@
 import { IAsset, ILightCollection, IOffer, ITransfer } from '@atomichub/atomicassets';
 
-import { AuctionState, BuyofferState, SaleState } from './Enums';
+import { AuctionState, BuyofferState, RoyaltyListingType, RoyaltyPayoutCategory, SaleState } from './Enums';
 
 export interface IMarketPair {
     listing_symbol: string;
@@ -175,19 +175,33 @@ export interface IRoyaltyRecipient {
 }
 
 export interface IRoyaltyConfig {
+    market_contract: string;
+    collection_name: string;
     founders: IRoyaltyRecipient[];
     attribute_mode: number;
     split_founders: string;
     split_templates: string;
     split_attributes: string;
+    updated_at_block: string;
+    updated_at_time: string;
+    created_at_block: string;
+    created_at_time: string;
 }
 
 export interface IRoyaltyTemplateRule {
+    market_contract: string;
+    collection_name: string;
     template_id: string;
     recipients: IRoyaltyRecipient[];
+    updated_at_block: string;
+    updated_at_time: string;
+    created_at_block: string;
+    created_at_time: string;
 }
 
 export interface IRoyaltyAttributeRule {
+    market_contract: string;
+    collection_name: string;
     rule_id: string;
     source: number;
     field: string;
@@ -196,4 +210,49 @@ export interface IRoyaltyAttributeRule {
     value: [string, unknown];
     weight: string;
     recipients: IRoyaltyRecipient[];
+    // Hex-encoded sha256 of the attribute the rule matches, the same digest the
+    // contract looks the rule up by.
+    lookup_hash: string;
+    updated_at_block: string;
+    updated_at_time: string;
+    created_at_block: string;
+    created_at_time: string;
+}
+
+// One settled payout, keyed by the settlement log's global sequence and by the
+// entry's position in that log's payout vector.
+export interface IRoyaltyPayout extends IMarketToken {
+    market_contract: string;
+    log_global_sequence: string;
+    payout_index: number;
+    // Null when the stored value falls outside the vocabulary this SDK
+    // serves.
+    listing_type: RoyaltyListingType | null;
+    // Null when the listing type is unresolved, which is the row the filler
+    // keeps when it cannot trace the settlement back to a listing.
+    listing_id: string | null;
+    // Null when the stored value falls outside the vocabulary this SDK
+    // serves.
+    category: RoyaltyPayoutCategory | null;
+    collection_name: string;
+    asset_id: string | null;
+    // The category picks which of the two is set: a template payout carries
+    // template_id, an attribute payout carries rule_id, and a founders or dust
+    // payout carries neither.
+    template_id: string | null;
+    rule_id: string | null;
+    recipient: string;
+    // Raw token units, read with the token_precision of this same row.
+    amount: string;
+    txid: string;
+    created_at_block: string;
+    created_at_time: string;
+}
+
+// One row per token symbol the account has been paid in, summed over the
+// payouts the filters admit. Both totals are decimal strings, payout_count
+// included, because the API serves a SQL count as a string.
+export interface IRoyaltyAccountTotal extends IMarketToken {
+    amount: string;
+    payout_count: string;
 }
