@@ -9,6 +9,39 @@ type ApiArgs = { fetch?: Fetch };
 
 export type DataOptions = Array<{key: string, value: any, type?: string}>;
 
+// Asset ids, listing ids, collection names, marketplace names and account
+// names reach the path straight from the caller. Left raw, a value carrying
+// `/`, `?` or `#` escapes its own segment and rewrites the request target, so
+// every one is encoded where the path is assembled.
+//
+// Encoding alone does not cover a dot segment. `encodeURIComponent` leaves `.`
+// untouched, and the URL parser inside fetch then resolves the segment away
+// before the request goes out: `/v1/royalties/..` leaves as `/v1/royalties`,
+// and an empty id leaves `/v1/sales/` as the sale list. Both reach a real
+// route on the same origin, so the caller reads rows it never asked for
+// instead of seeing a failure. Neither value is ever an id, a name or an
+// account, so both are refused here rather than encoded into a request that
+// quietly reads elsewhere.
+//
+// A value that equals a sibling route literal such as "_count" or "payouts" is
+// a valid segment and passes: that request lands on the neighbouring route,
+// which is the caller's error, not a rewrite this helper can detect.
+function encodeSegment(value: string, field: string): string {
+    // A missing value would travel as the literal segment "undefined" or "null"
+    // and read as an API fault instead of the caller's mistake.
+    if (value === null || value === undefined) {
+        throw new Error(`${field} is required`);
+    }
+
+    const segment = String(value);
+
+    if (segment === '' || segment === '.' || segment === '..') {
+        throw new Error(`${field} ${JSON.stringify(segment)} is not an id: it is empty or a dot segment, so it would rewrite the request path`);
+    }
+
+    return encodeURIComponent(segment);
+}
+
 function buildDataOptions(options: {[key: string]: any}, data: DataOptions): {[key: string]: any} {
     const dataFields: {[key: string]: string} = {};
 
@@ -49,11 +82,11 @@ export default class AtomicMarketApi {
     }
 
     async getSale(id: string): Promise<ISale> {
-        return await this.fetchEndpoint('/v1/sales/' + encodeURIComponent(id), {});
+        return await this.fetchEndpoint('/v1/sales/' + encodeSegment(id, 'sale id'), {});
     }
 
     async getSaleLogs(id: string, page: number = 1, limit: number = 100, order: string = 'desc'): Promise<ILog[]> {
-        return await this.fetchEndpoint('/v1/sales/' + encodeURIComponent(id) + '/logs', {page, limit, order});
+        return await this.fetchEndpoint('/v1/sales/' + encodeSegment(id, 'sale id') + '/logs', {page, limit, order});
     }
 
     // The /v2/sales route is the API's newer materialized sales index. Its row
@@ -75,11 +108,11 @@ export default class AtomicMarketApi {
     }
 
     async getAuction(id: string): Promise<IAuction> {
-        return await this.fetchEndpoint('/v1/auctions/' + encodeURIComponent(id), {});
+        return await this.fetchEndpoint('/v1/auctions/' + encodeSegment(id, 'auction id'), {});
     }
 
     async getAuctionLogs(id: string, page: number = 1, limit: number = 100, order: string = 'desc'): Promise<ILog[]> {
-        return await this.fetchEndpoint('/v1/auctions/' + encodeURIComponent(id) + '/logs', {page, limit, order});
+        return await this.fetchEndpoint('/v1/auctions/' + encodeSegment(id, 'auction id') + '/logs', {page, limit, order});
     }
 
     async getBuyoffers(options: BuyofferApiParams = {}, page: number = 1, limit: number = 100, data: DataOptions = []): Promise<IBuyoffer[]> {
@@ -91,11 +124,11 @@ export default class AtomicMarketApi {
     }
 
     async getBuyoffer(id: string): Promise<IBuyoffer> {
-        return await this.fetchEndpoint('/v1/buyoffers/' + encodeURIComponent(id), {});
+        return await this.fetchEndpoint('/v1/buyoffers/' + encodeSegment(id, 'buyoffer id'), {});
     }
 
     async getBuyofferLogs(id: string, page: number = 1, limit: number = 100, order: string = 'desc'): Promise<ILog[]> {
-        return await this.fetchEndpoint('/v1/buyoffers/' + encodeURIComponent(id) + '/logs', {page, limit, order});
+        return await this.fetchEndpoint('/v1/buyoffers/' + encodeSegment(id, 'buyoffer id') + '/logs', {page, limit, order});
     }
 
     async getMarketplaces(): Promise<IMarketplace[]> {
@@ -103,7 +136,7 @@ export default class AtomicMarketApi {
     }
 
     async getMarketplace(name: string): Promise<IMarketplace> {
-        return await this.fetchEndpoint('/v1/marketplaces/' + encodeURIComponent(name), {});
+        return await this.fetchEndpoint('/v1/marketplaces/' + encodeSegment(name, 'marketplace name'), {});
     }
 
     async getConfig(): Promise<IMarketConfig> {
@@ -116,7 +149,7 @@ export default class AtomicMarketApi {
     // the normal "no config" case, mapped to null here, never an error.
     async getRoyaltyConfig(collection: string): Promise<IRoyaltyConfig | null> {
         try {
-            return await this.fetchEndpoint('/v1/royalties/' + encodeURIComponent(collection), {});
+            return await this.fetchEndpoint('/v1/royalties/' + encodeSegment(collection, 'collection name'), {});
         } catch (error) {
             if (error instanceof ApiError && error.status === 416) {
                 return null;
@@ -127,11 +160,11 @@ export default class AtomicMarketApi {
     }
 
     async getRoyaltyTemplateRules(collection: string, page: number = 1, limit: number = 100): Promise<IRoyaltyTemplateRule[]> {
-        return await this.fetchEndpoint('/v1/royalties/' + encodeURIComponent(collection) + '/templates', {page, limit});
+        return await this.fetchEndpoint('/v1/royalties/' + encodeSegment(collection, 'collection name') + '/templates', {page, limit});
     }
 
     async getRoyaltyAttributeRules(collection: string, page: number = 1, limit: number = 100): Promise<IRoyaltyAttributeRule[]> {
-        return await this.fetchEndpoint('/v1/royalties/' + encodeURIComponent(collection) + '/attributes', {page, limit});
+        return await this.fetchEndpoint('/v1/royalties/' + encodeSegment(collection, 'collection name') + '/attributes', {page, limit});
     }
 
     // The settled payout ledger, newest first, one row for each entry in a
@@ -150,7 +183,7 @@ export default class AtomicMarketApi {
     // What one account has been paid, one row per token symbol. An account
     // paid in two tokens returns two rows, and one never paid returns none.
     async getRoyaltyAccount(account: string, options: RoyaltyAccountApiParams = {}): Promise<IRoyaltyAccountTotal[]> {
-        return await this.fetchEndpoint('/v1/royalties/accounts/' + encodeURIComponent(account), options);
+        return await this.fetchEndpoint('/v1/royalties/accounts/' + encodeSegment(account, 'account'), options);
     }
 
     /* PRICE API */
@@ -184,7 +217,7 @@ export default class AtomicMarketApi {
     }
 
     async getAsset(id: string): Promise<IMarketAsset> {
-        return await this.fetchEndpoint('/v1/assets/' + encodeURIComponent(id), {});
+        return await this.fetchEndpoint('/v1/assets/' + encodeSegment(id, 'asset id'), {});
     }
 
     async getTransfers(options: TransferApiParams = {}, page: number = 1, limit: number = 100): Promise<IMarketTransfer[]> {
@@ -200,9 +233,10 @@ export default class AtomicMarketApi {
     }
 
     async getOffer(id: string): Promise<IMarketOffer> {
-        return await this.fetchEndpoint('/v1/offers/' + encodeURIComponent(id), {});
+        return await this.fetchEndpoint('/v1/offers/' + encodeSegment(id, 'offer id'), {});
     }
 
+    // path is literals plus encodeSegment output; this method validates nothing.
     async fetchEndpoint<T>(path: string, args: any): Promise<T> {
         let response, json;
 
