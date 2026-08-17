@@ -428,6 +428,14 @@ Two of them do foreclose a purchase the chain would have taken, deliberately. Re
 
 Nothing here reads chain state. Whether a symbol is supported, and whether a pairing of two is registered, is chain state, which is why `announceSaleActions` checks nothing at all and why the settlement amount an oracle-settled sale deposits goes unchecked here, the helper never being handed the pair it derives from. Bound anything else you read from a response before you trust it.
 
+## What's new in 2.4.1
+
+Refuses a path id that would send the request somewhere else.
+
+### Bug fixes
+
+- An empty id, `.`, or `..` passed to an Explorer method that puts it in a path segment now throws before the request. `encodeURIComponent` leaves a dot alone, so the URL parser inside `fetch` used to resolve the segment away and read a neighbouring route on the same origin: `getRoyaltyAccount('..')` requested `/v1/royalties/`, and an empty id turned a single-row route into its list. The thirteen readers that take an id or a name in the path, over sales, auctions, buy-offers, marketplaces, royalties, assets, and offers, all carry the check. (#25)
+
 ## What's new in 2.4.0
 
 Reads the settled royalty ledger, so a consumer no longer has to page the payout logs itself.
