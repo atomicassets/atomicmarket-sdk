@@ -6,7 +6,7 @@ How a version of this package reaches npm and GitHub. A release ends at a render
 
 1. The feature PR carries the README `## What's new in X.Y.Z` entry for the version, and squash-merges so its subject ends with `(#N)`.
 
-2. Land a `chore(release): X.Y.Z` commit on `main` that touches `package.json` alone.
+2. Land a `chore(release): X.Y.Z` commit on `main` that touches `package.json` alone. CI's `test/packaging.test.ts` on that commit proves the tarball ships only the files the package metadata section expects.
 
 3. Tag that commit and push the tag:
 
@@ -97,6 +97,26 @@ A release with neither leaves both out, which is the normal case here.
 `scripts/release-notes.sh vX.Y.Z` reads the README `## What's new in X.Y.Z` entry written in the feature PR, promotes its `### ` headings to `## `, appends the commit list, and appends the compare link. Write that entry with H3 section headings (`### Breaking changes`, `### Features`, and the rest) and the Release body needs no second draft.
 
 The script needs bash, git, awk and sed. It reads the README at the tag, not from the working tree, so the body describes what the tag ships. A prerelease tag reads the entry for its base version, so `vX.Y.Z-rc.1` reads `## What's new in X.Y.Z` as that entry stands at the candidate tag. It exits non-zero and names what is missing when the tag does not exist, when the README at the tag has no entry for the version, or when no earlier tag exists.
+
+## Package metadata
+
+`package.json` carries the fields the npm page and a consumer read, and a release does not change them by accident:
+
+- `name` and `version`.
+- `description`: one sentence on what the package does and for whom.
+- `license`, with the `LICENSE` file shipped.
+- `homepage`.
+- `repository`: an object with `type: git` and the `git+https` URL of this repository.
+- `bugs`: an object with the issues URL.
+- `author`: an object with `name` and `url`.
+- `keywords`.
+- `engines`.
+- `main`, `module`, `types` and the `exports` map.
+- `files`: the build output and the notices that must ship.
+- `sideEffects`.
+- `publishConfig` with `access: public` and `provenance: true`, so a publish outside `publish.yml` either carries the same access and provenance or fails, instead of publishing without them.
+
+The README opens with the package name, the npm version, CI and license badges, a short introduction on what the package is for, and an install line, because that README is the npm page. `npm pack --dry-run` lists what the tarball ships; the build output, its type declarations and source maps, the README, the license and the notices are expected, anything else is a `files` mistake. `test/packaging.test.ts` runs that check in CI, so the tarball is proven before the tag.
 
 ## Tag ranges, prereleases, and older releases
 

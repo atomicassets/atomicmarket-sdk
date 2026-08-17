@@ -1,6 +1,7 @@
 # @atomichub/atomicmarket
 
 [![npm version](https://img.shields.io/npm/v/@atomichub/atomicmarket.svg)](https://www.npmjs.com/package/@atomichub/atomicmarket)
+[![CI](https://github.com/atomicassets/atomicmarket-sdk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/atomicassets/atomicmarket-sdk/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/@atomichub/atomicmarket.svg)](https://github.com/atomicassets/atomicmarket-sdk/blob/main/LICENSE)
 
 Read NFT market data from the [AtomicMarket](https://github.com/atomicassets/atomicmarket-contract) contract in JavaScript or TypeScript.
