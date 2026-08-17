@@ -89,3 +89,33 @@ export enum TransferSort {
 export enum OfferSort {
     Created = 'created'
 }
+
+// Royalty payout ledger vocabulary (/v1/royalties/payouts). The indexer stores
+// each of these as a small integer and serves the name, and it filters on the
+// name too, so these are the values a query carries.
+
+// Which listing settled the payout. Unresolved is a real stored value, not a
+// missing one: the filler keeps a payout whose settlement action it could not
+// trace back to a listing, and such a row carries a null listing_id.
+export enum RoyaltyListingType {
+    Unresolved = 'unresolved',
+    Sale = 'sale',
+    Auction = 'auction',
+    Buyoffer = 'buyoffer',
+    TemplateBuyoffer = 'template_buyoffer'
+}
+
+// Which royalty rule paid. Dust is the settlement remainder plus the author
+// fallback, so a dust row pays the collection author and names no asset,
+// template, or rule.
+export enum RoyaltyPayoutCategory {
+    Founders = 'founders',
+    Template = 'template',
+    Attribute = 'attribute',
+    Dust = 'dust'
+}
+
+export enum RoyaltyPayoutSort {
+    Created = 'created',
+    Amount = 'amount'
+}
