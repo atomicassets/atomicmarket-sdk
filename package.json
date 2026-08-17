@@ -12,7 +12,10 @@
     "blockchain",
     "sdk"
   ],
-  "author": "AtomicHub",
+  "author": {
+    "name": "AtomicHub",
+    "url": "https://atomichub.io"
+  },
   "homepage": "https://github.com/atomicassets/atomicmarket-sdk",
   "bugs": {
     "url": "https://github.com/atomicassets/atomicmarket-sdk/issues"
@@ -22,6 +25,10 @@
     "url": "git+https://github.com/atomicassets/atomicmarket-sdk.git"
   },
   "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "sideEffects": false,
   "version": "2.4.0",
   "engines": {
