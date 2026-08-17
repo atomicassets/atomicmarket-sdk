@@ -406,46 +406,104 @@ Nothing here reads chain state. Whether a symbol is supported, and whether a pai
 
 ## What's new in 2.3.0
 
-Breaking, and worth reading before upgrading: `deriveSettlementAmount` returns a different integer for some inputs, and `purchaseSaleActions` rejects input it used to build.
+Adds the auction, buy-offer and template-buy-offer builders and aligns the purchase path with the v2 contract.
 
-- `deriveSettlementAmount` reproduces the contract's own conversion rather than the exact quotient. Where the contract's double arithmetic lands a raw unit above the exact floor, so does this, because that unit is the difference between a deposit that funds the purchase and one that leaves it short. A pair whose exponent works out negative, and a result at or past 2^64, now throw: the contract has no defined answer for either.
-- `purchaseSaleActions` throws on more than one `asset_ids` entry. On v2 that transaction commits with the buyer charged and nothing delivered, rather than reverting. `allow_v1_bundle_sale` opts out for a chain still running v1, where bundles are ordinary listings.
-- `purchaseSaleActions` requires the cross-symbol branch's `settlement_quantity` to be denominated in `settlement_symbol`, the same wrong-payment check the plain branch already made.
-- `purchaseSaleActions` keys its checks on the contract's settlement discriminator, full symbol equality between `listing_price` and `settlement_symbol`, so a settlement symbol differing from the price in precision alone settles through the oracle rather than reading as a mismatch.
-- On a sale settling the symbol it priced in, a supplied `settlement_quantity` must equal `listing_price` and `intended_delphi_median` must be `'0'`.
-- `sideEffects: false`, matching the sibling atomicassets package, so bundlers may drop the package from builds that import nothing from it.
+### Breaking changes
 
-Additive in the same release:
+- `purchaseSaleActions` throws when `asset_ids` has more than one entry. On AtomicMarket v2 a bundle purchase commits with the buyer charged and nothing delivered. Set `allow_v1_bundle_sale: true` on chains still running v1, where bundles are ordinary listings. (#19)
+- `deriveSettlementAmount` matches the contract's own conversion instead of the exact quotient: where the contract's double arithmetic lands one raw unit above the exact floor, so does the SDK, and that unit is the difference between a deposit that funds the purchase and one that leaves it short. It throws on a pair with a negative exponent and on a result at or past 2^64. (#19)
+- `purchaseSaleActions` requires `settlement_quantity` in `settlement_symbol` on the cross-symbol branch, and on a same-symbol sale it must equal `listing_price` with `intended_delphi_median` set to `'0'`. (#19)
+- `purchaseSaleActions` picks its branch from the contract's settlement discriminator, full symbol equality between `listing_price` and `settlement_symbol`. A settlement symbol differing from the price in precision alone therefore settles through the oracle rather than reading as a mismatch. (#19)
 
-- Auction, buyoffer, and template-buyoffer actions on `MarketActionBuilder` and `MarketActionGenerator`: `announceauct`, `cancelauct`, `auctionbid`, `auctclaimbuy`, `auctclaimsel`, `assertauct`, `createbuyo`, `cancelbuyo`, `declinebuyo`, `createtbuyo`, and `canceltbuyo`.
-- `announceAuctionActions` composing the auction pair, and `acceptBuyofferActions` and `fulfillTemplateBuyofferActions` composing the two flows whose market action reads the last created row of the AtomicAssets offers table. `acceptbuyo` and `fulfilltbuyo` are reachable only through those helpers, neither being safe to build on its own.
-- `AnnounceAuctionInput`, `AcceptBuyofferInput`, and `FulfillTemplateBuyofferInput` exported beside `PurchaseSaleInput` and `AnnounceSaleInput`.
+### Features
+
+- Adds auction, buy-offer and template-buy-offer actions to `MarketActionBuilder` and `MarketActionGenerator`: `announceauct`, `cancelauct`, `auctionbid`, `auctclaimbuy`, `auctclaimsel`, `assertauct`, `createbuyo`, `cancelbuyo`, `declinebuyo`, `createtbuyo`, `canceltbuyo`. (#20)
+- `announceAuctionActions`, `acceptBuyofferActions` and `fulfillTemplateBuyofferActions` compose the multi-action flows. `acceptbuyo` and `fulfilltbuyo` read the last created row of the AtomicAssets offers table, so neither is safe to build alone and both are reachable only through these helpers. (#20)
+- `AnnounceAuctionInput`, `AcceptBuyofferInput` and `FulfillTemplateBuyofferInput` are exported beside `PurchaseSaleInput` and `AnnounceSaleInput`. (#20)
+
+### Other changes
+
+- `sideEffects: false` in `package.json`, matching the sibling `@atomichub/atomicassets` package, so bundlers may drop the package from builds that import nothing from it. (#19)
 
 ## What's new in 2.2.1
 
-- The Explorer client percent-encodes caller-supplied path ids and custom data-filter keys, so a value carrying `/`, `?`, `#`, `&`, or `=` can no longer reshape the request.
+### Bug fixes
+
+- The Explorer client percent-encodes caller-supplied path ids and custom data-filter keys, across the twelve path-building methods and the query-string builder. A sale id, marketplace or collection name, or `DataOptions` key carrying `/`, `?`, `#`, `&`, or `=` used to escape its own segment and reshape the request path or query. Hostile input now stays a value. (#17)
+
+### Other changes
+
+- Typed data filters travel as `data%3Anumber.field` rather than `data:number.field`. Standards query parsers percent-decode keys before matching, so servers see the same key. This is confirmed against the live API, where the encoded and raw forms return identical filtered rows. The plain `data.field` form is unchanged. (#17)
 
 ## What's new in 2.2.0
 
-- `purchaseSaleActions` and `announceSaleActions` on `MarketActionBuilder` and `MarketActionGenerator`, composing the purchase triple and the listing pair.
-- `deriveSettlementAmount` and `formatQuantity` for delphi-priced sales, with `DelphiPairSpec` projecting a supported pair from `getConfig`.
-- `IMarketPair.data.quote_precision` is typed `number` rather than the literal `2`, so a pair reads straight into a `DelphiPairSpec`.
+Composes the purchase and listing flows and adds the delphi settlement helpers.
+
+### Features
+
+- `purchaseSaleActions` composes `assertsale`, the deposit transfer, and `purchasesale`. `announceSaleActions` composes `announcesale` and the atomicassets `createoffer` carrying the sale memo. Both emit authorization-free action data in the order the market contract expects. (#16)
+- `purchaseSaleActions` throws when a delphi-priced sale arrives without a `settlement_quantity`, because that omission pays the wrong amount rather than failing the transaction. (#16)
+- `deriveSettlementAmount` reproduces the market contract's settlement math with `BigInt`, the float formula losing precision at on-chain magnitudes. `formatQuantity` renders raw integer amounts as chain quantities. (#16)
+- `DelphiPairSpec` projects a supported pair from `getConfig` and rejects a non-positive median or a precision outside the chain's 0 to 18, naming the field in the error. (#16)
+- `IMarketPair.data.quote_precision` is typed `number` rather than the literal `2`, so a pair read from the API feeds a `DelphiPairSpec` directly. (#16)
+- `regmarket` and `withdraw` action builders cover marketplace registration and market-balance withdrawal. (#15)
 
 ## What's new in 2.1.0
 
-- Sale lifecycle actions on `MarketActionBuilder` and `MarketActionGenerator`: `announcesale`, `cancelsale`, `assertsale`, and `purchasesale`.
-- RAM payment actions: `paysaleram`, `payauctram`, and `paybuyoram`.
-- `getSalesV2` and `countSalesV2` for the `/v2/sales` route.
-- `countOffers`, with `MarketOfferApiParams` widening `state` to comma-joined multi-state filters, and now shared by `getOffers`.
+Adds the sale lifecycle and RAM payment actions, plus the `/v2/sales` routes.
+
+### Features
+
+- Adds the sale lifecycle actions to `MarketActionBuilder` and `MarketActionGenerator`: `announcesale`, `cancelsale`, `assertsale`, `purchasesale`. The uint64 fields, the listing ids and `intended_delphi_median`, are strings, so 64-bit values pass through without precision loss. (#14)
+- RAM payment actions `paysaleram`, `payauctram` and `paybuyoram` move the RAM cost of a listing's table row onto the payer. Any account may pay, signing as the payer. (#14)
+- Adds `getSalesV2` and `countSalesV2` for the `/v2/sales` route, a newer materialized index with the same row shape as `/v1/sales`. `/v2/sales` omits Waiting sales, so a state filter that includes Waiting belongs on the v1 route. (#14)
+- `countOffers` joins `getOffers`, both taking the new `MarketOfferApiParams`, which widens the state filter to comma-joined multi-state queries like the sale and auction params already allow. (#14)
+
+## What's new in 2.0.1
+
+Corrects the buy-offer state enums and the ESM import graph, and depends on the published `@atomichub/atomicassets`.
+
+### Breaking changes
+
+- `BuyofferState` names the lifecycle the indexer reports (`Pending`, `Declined`, `Canceled`, `Accepted`, `Invalid`) instead of the sale lifecycle. The numeric values are unchanged, so filters built from raw numbers behave the same. Code using the removed `BuyofferState.Listed` and `BuyofferState.Sold` no longer compiles and moves to the corrected names. (#13)
+
+### Features
+
+- `TemplateBuyofferState` is new. The template buyoffer routes number their states from `Listed`, one below the other listing types. (#13)
+
+### Bug fixes
+
+- A bare `import ... from '@atomichub/atomicmarket'` under Node ESM no longer fails with "does not provide an export named 'AtomicHubNetwork'". `Networks.ts` now splits the value import `NETWORK_ENDPOINTS` from the type-only `AtomicHubNetwork`, so esbuild drops the type from the emitted graph. The CJS build was never affected. (#7)
+
+### Other changes
+
+- The `@atomichub/atomicassets` dependency is a registry range, `^2.0.0`, rather than a git ref, so the lockfile carries a tarball with an integrity hash. (#10)
+- npm publishing runs through the trusted publisher rather than a stored token, so releases carry provenance with no long-lived publish secret. (#8)
 
 ## What's new in 2.0.0
 
-- Zero third-party runtime dependencies: the built-in `fetch` replaces node-fetch (a custom `fetch` can still be injected); the only dependency is the sibling `@atomichub/atomicassets`.
-- Dual CJS/ESM output with bundled type declarations, plus a browser IIFE build.
-- v2 royalty read endpoints: `getRoyaltyConfig`, `getRoyaltyTemplateRules`, and `getRoyaltyAttributeRules`.
-- `MarketActionBuilder`, a synchronous builder for royalty-config actions.
-- Typed on-chain table rows and the `AtomicMarketActions` action-name constants.
-- Market API response-object, query-parameter, and enum types are exported from the package root; no deep `build/` imports needed.
+Publishes the AtomicHub fork as `@atomichub/atomicmarket`.
+
+### Breaking changes
+
+- The package name is `@atomichub/atomicmarket`. Install it under that name and change imports from `'atomicmarket'`. (#1)
+- Deep imports such as `atomicmarket/build/API/Explorer/Params` are replaced by root exports, for example `import { SaleApiParams } from '@atomichub/atomicmarket'`. (#1)
+- Numeric ABI fields (`template_id`, weights, splits) are numbers. The 64-bit id fields, sale ids and rule ids, remain strings. (#1)
+- Node.js 20 or newer is required. (#1)
+
+### Features
+
+- The package has no third-party runtime dependencies. The built-in `fetch` replaces node-fetch, and a custom `fetch` can still be injected. The only dependency is the sibling `@atomichub/atomicassets`. (#1)
+- Ships dual CJS and ESM output with bundled type declarations, plus a browser IIFE build. (#1)
+- Adds the v2 royalty read endpoints `getRoyaltyConfig`, `getRoyaltyTemplateRules` and `getRoyaltyAttributeRules`. (#1)
+- Adds `MarketActionBuilder`, a synchronous builder for royalty-config actions, alongside `MarketActionGenerator`, which covers the six royalty-configuration actions and their deletes. (#1)
+- Exports typed on-chain table rows and the `AtomicMarketActions` action-name constants. (#1)
+- Exports the market API response-object, query-parameter and enum types from the package root, so no deep `build/` imports are needed. (#1)
+- Adds `current_collection_fee` to sales, auctions and buyoffers. (#1)
+
+### Bug fixes
+
+- `IBuyoffer` matches what the published `atomicmarket` 1.1.6 returns. It carries `buyoffer_id`, `memo` and `decline_memo`, where it used to carry `auction_id` and neither memo field. (#1)
 
 ## Migrating from atomicmarket 1.x
 
