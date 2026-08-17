@@ -45,6 +45,10 @@ The Release title is the tag name verbatim. The body is an optional one-sentence
 
 - <what changed, and what the reader does about it>. (#N)
 
+## Upgrading
+
+- <what the move from the previous stable release takes: migrations, configuration keys, image tags>.
+
 ## Features
 
 - <what is new>. (#N)
@@ -53,6 +57,18 @@ The Release title is the tag name verbatim. The body is an optional one-sentence
 
 - <what was wrong and is not now>. (#N)
 
+## Security
+
+- <the advisory or the dependency lift, named>. (#N)
+
+## Deprecations
+
+- <what is deprecated and what replaces it>. (#N)
+
+## Other changes
+
+- <a change a consumer notices that fits no section above>. (#N)
+
 ## Commits
 
 - <short sha> <subject>
@@ -60,7 +76,12 @@ The Release title is the tag name verbatim. The body is an optional one-sentence
 Full changelog: https://github.com/atomicassets/atomicmarket-sdk/compare/<PREV>...<TAG>
 ```
 
-The section order is breaking changes, features, bug fixes, deprecations, other changes.
+The section order is breaking changes, upgrading, features, bug fixes, security, deprecations, other changes. The two optional ones:
+
+- `## Upgrading` says what the move from the previous stable release takes: renamed exports, configuration to set, a step to run. It is written against that release rather than against the tag range, and a candidate body may confine it to what changed since the previous candidate that carries a Release.
+- `## Security` carries the advisories and the dependency lifts, each named by its GHSA or CVE.
+
+A release with neither leaves both out, which is the normal case here.
 
 ## Voice
 
@@ -75,11 +96,11 @@ The section order is breaking changes, features, bug fixes, deprecations, other 
 
 `scripts/release-notes.sh vX.Y.Z` reads the README `## What's new in X.Y.Z` entry written in the feature PR, promotes its `### ` headings to `## `, appends the commit list, and appends the compare link. Write that entry with H3 section headings (`### Breaking changes`, `### Features`, and the rest) and the Release body needs no second draft.
 
-The script needs bash, git, awk and sed. It reads the README at the tag, not from the working tree, so the body describes what the tag ships. It exits non-zero and names what is missing when the tag does not exist, when the README at the tag has no entry for the version, or when no earlier tag exists.
+The script needs bash, git, awk and sed. It reads the README at the tag, not from the working tree, so the body describes what the tag ships. A prerelease tag reads the entry for its base version, so `vX.Y.Z-rc.1` reads `## What's new in X.Y.Z` as that entry stands at the candidate tag. It exits non-zero and names what is missing when the tag does not exist, when the README at the tag has no entry for the version, or when no earlier tag exists.
 
 ## Tag ranges, prereleases, and older releases
 
-- `PREV` is the nearest earlier `v*` tag reachable from `TAG^`, which is what `git describe --tags --abbrev=0 --match 'v*' vX.Y.Z^` returns. Tags from older release lines count.
+- `PREV` for a stable tag is the nearest earlier stable `v*` tag reachable from `TAG^`, which is what `git describe --tags --abbrev=0 --match 'v*' --exclude 'v*-*' vX.Y.Z^` returns, so a stable release lists every commit since the last stable release. For a prerelease tag `PREV` is the nearest earlier tag of any kind, so each candidate lists what it adds to the tag before it. A stable tag whose only earlier tags are prereleases takes the nearest of them. Tags from older release lines count.
 - `## Commits` lists the whole `PREV..TAG` range, oldest first, including the release commit. Its line count equals `git rev-list --count PREV..TAG`.
 - A tag with no earlier tag has no `PREV`. Its body is the summary and the sentence `Initial release.`, with no commit list and no compare link, and it is written by hand.
 - A prerelease tag (`vX.Y.Z-rc.1` and the like) is created with `--prerelease`.
