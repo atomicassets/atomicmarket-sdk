@@ -62,3 +62,6 @@ jobs:
 
       - name: Test
         run: yarn run test
+
+      - name: Release notes script
+        run: bash scripts/release-notes.test.sh
