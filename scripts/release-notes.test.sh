@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Paired test for scripts/release-notes.sh. Builds a throwaway git repository
-# under mktemp -d, runs the script inside it, and asserts the five propositions
+# under mktemp -d, runs the script inside it, and asserts the six propositions
 # the release checklist rests on.
 #
 # Usage: bash scripts/release-notes.test.sh
@@ -77,8 +77,40 @@ git tag v1.0.0
 commit "feat: add the builder (#7)"
 commit "chore(release): 1.1.0"
 git tag v1.1.0
-commit "chore: a version the README does not document"
+
+# The 1.2.0 line: one README entry, a candidate tag, then the stable tag.
+cat >README.md <<'EOF'
+# example
+
+## What's new in 1.2.0
+
+### Bug fixes
+
+- The defect the candidate was cut to find. (#9)
+
+## What's new in 1.1.0
+
+### Features
+
+- A builder consumers can call without hand-rolling the payload. (#7)
+
+## What's new in 1.0.0
+
+- The first stable release.
+
+## Install
+
+Nothing here; the heading terminates the entry above it.
+EOF
+commit "docs: the 1.2.0 entry"
+commit "chore(release): 1.2.0-rc.1"
+git tag v1.2.0-rc.1
+commit "fix: repair what the candidate found (#9)"
+commit "chore(release): 1.2.0"
 git tag v1.2.0
+
+commit "chore: a version the README does not document"
+git tag v1.3.0
 
 commit_lines() {
     printf '%s\n' "$RUN_OUT" |
@@ -112,10 +144,10 @@ fi
 
 # --- 3: no README entry ------------------------------------------------------
 
-run v1.2.0
+run v1.3.0
 if [ "$RUN_RC" -ne 0 ] &&
     printf '%s\n' "$RUN_OUT" | grep -q 'README' &&
-    printf '%s\n' "$RUN_OUT" | grep -q '1\.2\.0'; then
+    printf '%s\n' "$RUN_OUT" | grep -q '1\.3\.0'; then
     ok "a version with no README entry exits non-zero and names the version"
 else
     no "missing README entry" "rc=$RUN_RC out='$RUN_OUT'"
@@ -142,6 +174,26 @@ if [ "$RUN_RC" -eq 0 ] &&
     ok "v1.0.0 resolves PREV to the older v0.9.0 and lists the $want commit since it"
 else
     no "legacy PREV" "rc=$RUN_RC commits=$got want=$want last='$last'"
+fi
+
+# --- 6: a stable tag skips the candidate, which reads the same entry ---------
+
+run v1.2.0
+stable_rc=$RUN_RC
+want="$(git rev-list --count v1.1.0..v1.2.0)"
+got="$(commit_lines)"
+last="$(printf '%s\n' "$RUN_OUT" | tail -n 1)"
+run v1.2.0-rc.1
+rc_last="$(printf '%s\n' "$RUN_OUT" | tail -n 1)"
+if [ "$stable_rc" -eq 0 ] &&
+    [ "$got" = "$want" ] &&
+    [ "$last" = "Full changelog: https://github.com/example/repo/compare/v1.1.0...v1.2.0" ] &&
+    [ "$RUN_RC" -eq 0 ] &&
+    printf '%s\n' "$RUN_OUT" | grep -qx '## Bug fixes' &&
+    [ "$rc_last" = "Full changelog: https://github.com/example/repo/compare/v1.1.0...v1.2.0-rc.1" ]; then
+    ok "v1.2.0 skips v1.2.0-rc.1 and lists $want commits, and the candidate reads the 1.2.0 entry"
+else
+    no "prerelease PREV rule" "rc=$stable_rc commits=$got want=$want last='$last' rc_rc=$RUN_RC rc_last='$rc_last'"
 fi
 
 printf 'passed %s/%s\n' "$PASSED" "$CASES"
