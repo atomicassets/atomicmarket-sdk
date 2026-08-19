@@ -14,7 +14,7 @@ How a version of this package reaches npm and GitHub. A release ends at a render
     git tag vX.Y.Z && git push origin vX.Y.Z
     ```
 
-    `publish.yml` starts and waits on the `npm-publish` environment. Push the tag before you create the Release, because `--target <short sha>` fails.
+    `publish.yml` starts; its build job runs the release gates (tag matches version, tag on main), the install, the tests, and packs the tarball; its publish job waits on the `npm-publish` environment. Push the tag before you create the Release, because `--target <short sha>` fails.
 
 4. Compose the body, read it, then create the Release:
 
@@ -25,7 +25,7 @@ How a version of this package reaches npm and GitHub. A release ends at a render
 
     With more than one release in flight, create them in ascending version order.
 
-5. Approve the `npm-publish` environment for the tag. With more than one release waiting, approve in ascending version order, so npm `latest` stays monotonic.
+5. Approve the `npm-publish` environment for the tag once the run is green through the build gates, the tag-on-main check included, which proves the tagged commit sits on `main`. With more than one release waiting, approve in ascending version order, so npm `latest` stays monotonic.
 
 6. Verify the published version and the rendered Release:
 
@@ -33,6 +33,21 @@ How a version of this package reaches npm and GitHub. A release ends at a render
     npm view @atomichub/atomicmarket version
     gh release view vX.Y.Z
     ```
+
+## Publish auth
+
+The publish job authenticates through npm trusted publishing (OIDC). It holds
+no npm token and sets no registry URL on the setup step, so nothing writes an
+`.npmrc` auth entry and npm 11.5.1 or later exchanges the job's OIDC identity
+for a short-lived credential of its own. The `npm-publish` environment is the
+gate on that identity: the build job runs immediately on the pushed tag, and
+the publish job waits until a maintainer approves it.
+
+`publishConfig.provenance` in `package.json` makes a default local npm publish
+fail, because no OIDC identity is available outside CI to satisfy it. It is
+data inside the manifest being published, not an access control. The durable
+control is the npm-side package setting that requires trusted publishing,
+which closes the classic-token path that no workflow change can reach.
 
 ## Body template
 

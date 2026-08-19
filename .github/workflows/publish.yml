@@ -1,49 +1,69 @@
 name: Publish
 
-# Tag-triggered publish to npm, authenticated by npm's trusted publisher rather
-# than a stored token. It runs only on a pushed v* tag, and only once a
-# maintainer approves the npm-publish environment. Publishing therefore needs
-# the trusted publisher registered on npmjs.com against this repository, this
-# workflow filename and that environment; no NPM_TOKEN is involved.
+# Tag-triggered publish to npm, split into a build job and a publish job so no
+# credential is ever present while this repository's own code runs. The build
+# job checks the release gates, installs, builds, tests and packs a tarball; it
+# holds no id-token and no environment, so it runs on the tag push, before
+# anyone approves, and its result is what the approver judges. The publish job
+# holds the OIDC id-token alone, beside the prebuilt tarball and nothing else.
+# Authentication is npm's trusted publisher rather than a stored token, so
+# publishing needs that publisher registered on npmjs.com against this
+# repository, this workflow filename and the npm-publish environment; no
+# NPM_TOKEN is involved.
 on:
   push:
     tags: ['v*']
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
-    # Required-reviewer environment: a pushed tag queues the publish until a
-    # maintainer approves the run, and npm's trusted publisher config pins to
-    # this environment name so no other workflow can mint a publish token.
-    environment: npm-publish
+    # No id-token and no environment on this job: a lifecycle script anywhere
+    # in the dependency tree runs here, so there is nothing for it to read.
     permissions:
       contents: read
-      id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history, so the tag-on-main gate below can decide ancestry.
+          fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - name: Verify the tag is on main
+        # Fails a tag pushed on a commit that is not on main, so an approval
+        # can never cover a commit off the release line. The ref is spelled
+        # refs/remotes/origin/main because git resolves the ambiguous
+        # origin/main as refs/tags/origin/main first, so a tag named
+        # origin/main would otherwise defeat this gate.
+        run: |
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "Tag $GITHUB_REF_NAME is not on main" >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
           cache: yarn
-
-      - name: Upgrade npm
-        # Trusted publishing (OIDC) needs npm >= 11.5.1; the Node 22 image
-        # ships npm 10.x.
-        run: npm install -g npm@latest
 
       - name: Verify the package is publishable
         # A published tarball ships only package.json, so any git: dependency
         # would make every consumer install resolve a mutable branch tip (and
-        # fail outright once the branch is deleted). Also require the pushed
-        # tag to match package.json's version so a mistyped tag cannot publish
-        # the wrong version.
+        # fail outright once the branch is deleted). The same risk holds for
+        # optionalDependencies and peerDependencies, and for the gitlab:,
+        # bitbucket:, gist: prefixes and bare owner/repo shorthand, not just
+        # the git+/ssh+/github: forms. Also require the pushed tag to match
+        # package.json's version so a mistyped tag cannot publish the wrong
+        # version.
         run: |
           node -e '
-            const {dependencies = {}} = require("./package.json");
-            const gitDeps = Object.entries(dependencies)
-              .filter(([, spec]) => /(^|\+)(git|ssh)(\+|:)|\.git(#|$)|^github:|^[^@/]+\/[^@/]+#/.test(spec));
+            const pkg = require("./package.json");
+            const sections = ["dependencies", "optionalDependencies", "peerDependencies"];
+            const entries = sections.flatMap((key) => Object.entries(pkg[key] ?? {}));
+            const GIT_SPEC = /(^|\+)(git|ssh)(\+|:)|\.git(#|$)|^github:|^[^@/]+\/[^@/]+#/;
+            const HOST_PREFIX_SPEC = /^(gitlab|bitbucket|gist):/;
+            const SHORTHAND_SPEC = /^[^@./][^@/]*\/[^@/]+(#|$)/;
+            const LOCAL_SPEC = /^(file|link|workspace|npm|portal):/;
+            const gitDeps = entries.filter(([, spec]) => !LOCAL_SPEC.test(spec)
+              && (GIT_SPEC.test(spec) || HOST_PREFIX_SPEC.test(spec) || SHORTHAND_SPEC.test(spec)));
             if (gitDeps.length > 0) {
               console.error("Refusing to publish with git-resolved dependencies:");
               for (const [name, spec] of gitDeps) console.error(`  ${name}: ${spec}`);
@@ -88,10 +108,51 @@ jobs:
       - name: Test
         run: yarn run test
 
+      - name: Pack
+        # prepack runs here, where no credential exists. The publish job ships
+        # this tarball as packed.
+        run: npm pack
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-tarball
+          path: '*.tgz'
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Required-reviewer environment: the packed tarball waits here until a
+    # maintainer approves the run, and npm's trusted publisher pins this
+    # repository, this workflow file and this environment name, so no other
+    # workflow can mint a publish credential.
+    environment: npm-publish
+    # id-token alone, and no checkout and no dependency install in this job, so
+    # the credential sits beside a prebuilt tarball and nothing else.
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: package-tarball
+
+      # No registry-url: it writes an .npmrc _authToken line, and npm stops at
+      # that unresolvable credential instead of falling through to OIDC. No
+      # cache either, because this job has no checkout and so no lockfile to
+      # hash.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Install npm
+        # Trusted publishing needs npm >= 11.5.1, and the Node 22 image ships
+        # an older npm. The version is pinned exact so no floating executable
+        # runs beside the credential.
+        run: npm install -g --ignore-scripts npm@12.0.2
+
       - name: Publish
-        # No NODE_AUTH_TOKEN: npm mints a short-lived credential from the OIDC
-        # token this job requests, against the trusted publisher npmjs.com pins
-        # to this repo, workflow and environment. Supplying a token instead
-        # takes the classic auth path, which demands an interactive OTP and so
-        # can never complete unattended.
-        run: npm publish --access public --provenance
+        # The tarball came from the build job, and a tarball publish runs no
+        # lifecycle scripts; --ignore-scripts holds that whatever npm does
+        # later. No NODE_AUTH_TOKEN: npm exchanges this job's OIDC token for a
+        # short-lived credential, which also signs the provenance attestation.
+        run: npm publish ./*.tgz --access public --provenance --ignore-scripts
