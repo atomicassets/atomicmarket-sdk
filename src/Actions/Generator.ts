@@ -475,6 +475,33 @@ export class MarketActionBuilder {
         return this._pack('withdraw', {owner, token_to_withdraw});
     }
 
+    // The balance's other half, and the one action here that AtomicMarket does
+    // not own. The contract credits a balance from the on-notify handler of a
+    // token transfer carrying memo "deposit", so the action belongs to the
+    // settlement token's own contract and names that contract rather than this
+    // one. Every flow spending a market balance is funded this way, which is
+    // why purchaseSaleActions below composes it and why a bid or a buyoffer
+    // usually follows one. The memo is a contract rule, and this method is
+    // where the literal lives.
+    //
+    // quantity is a chain-notation asset string, forwarded verbatim like every
+    // other asset field here, and nothing checks it. The purchase guards below
+    // each compare a quantity against a sale's settlement symbol or its listing
+    // price, and a bare deposit carries neither field, so it has nothing to
+    // disagree with beyond what the serializer refuses on its own.
+    deposit(owner: string, quantity: string, token_contract: string): EosioActionData[] {
+        return [{
+            account: token_contract,
+            name: 'transfer',
+            data: {
+                from: owner,
+                to: this.contract,
+                quantity,
+                memo: 'deposit'
+            }
+        }];
+    }
+
     // Neither a purchase nor a listing is a single action, and each one's
     // action order, memo literals, and owning contract are contract rules
     // rather than caller preferences. The two helpers below compose them so
@@ -577,16 +604,7 @@ export class MarketActionBuilder {
 
         return [
             ...this.assertsale(input.sale_id, input.asset_ids, input.listing_price, input.settlement_symbol),
-            {
-                account: input.token_contract,
-                name: 'transfer',
-                data: {
-                    from: input.buyer,
-                    to: this.contract,
-                    quantity: input.settlement_quantity ?? input.listing_price,
-                    memo: 'deposit'
-                }
-            },
+            ...this.deposit(input.buyer, input.settlement_quantity ?? input.listing_price, input.token_contract),
             ...this.purchasesale(input.buyer, input.sale_id, input.intended_delphi_median, input.taker_marketplace)
         ];
     }
@@ -906,6 +924,12 @@ export class MarketActionGenerator {
         authorization: EosioAuthorizationObject[], owner: string, token_to_withdraw: string
     ): Promise<EosioActionObject[]> {
         return this._authorize(authorization, this.builder.withdraw(owner, token_to_withdraw));
+    }
+
+    async deposit(
+        authorization: EosioAuthorizationObject[], owner: string, quantity: string, token_contract: string
+    ): Promise<EosioActionObject[]> {
+        return this._authorize(authorization, this.builder.deposit(owner, quantity, token_contract));
     }
 
     async purchaseSaleActions(
