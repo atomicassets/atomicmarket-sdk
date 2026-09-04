@@ -448,7 +448,7 @@ Builds the deposit that funds a market balance, instead of leaving it to each in
 
 ### Features
 
-- `deposit` builds the market-balance transfer described above, on the builder and the generator alike; `purchaseSaleActions` now composes it instead of assembling its own transfer, with the emitted triple unchanged. (#28)
+- `deposit` builds the settlement token's transfer to the market contract with memo `deposit`, from the token contract the caller names, on the builder and the generator alike. `purchaseSaleActions` now composes it instead of assembling its own transfer, and the emitted triple is unchanged. (#28)
 
 ## What's new in 2.4.1
 
