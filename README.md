@@ -226,7 +226,7 @@ const purchase = builder.purchaseSaleActions({
 });
 ```
 
-The deposit is a token transfer rather than an AtomicMarket action, which is why the helper needs `token_contract`. `assertsale` is what makes the triple safe against a sale that changed between reading it and the transaction landing: if the ids, the price, or the settlement symbol have moved, the assertion fails and nothing does.
+The deposit is a token transfer rather than an AtomicMarket action, which is why the helper needs `token_contract`; it is the `deposit` builder's action, and the triple carries it unchanged. `assertsale` is what makes the triple safe against a sale that changed between reading it and the transaction landing: if the ids, the price, or the settlement symbol have moved, the assertion fails and nothing does.
 
 It does not cover a sale of several assets. `purchasesale` on v2 returns early for such a row, declining the offer and erasing the listing before it reaches a balance, while `assertsale` passes on the very ids that made it return and the deposit has already credited the buyer. The transaction commits, and the buyer has paid for nothing and must `withdraw` to get the tokens back. So `purchaseSaleActions` throws on more than one `asset_ids` entry. Bundles are ordinary listings on a chain still running v1, where they purchase correctly, and `allow_v1_bundle_sale: true` is the opt-out for buying one there.
 
@@ -350,7 +350,7 @@ const claimedBySeller = builder.auctclaimsel('42'); // the seller takes the bid,
 const cancelled = builder.cancelauct('42');         // only before a bid lands
 ```
 
-A bid is spent from the bidder's balance inside the market contract rather than from their wallet, so fund it first with a transfer carrying memo `deposit`. An outbid bid returns to its bidder's balance the same way, and `withdraw` is what moves a balance back out.
+A bid is spent from the bidder's balance inside the market contract rather than from their wallet, so fund it first with `deposit`, the transfer carrying memo `deposit` covered below. An outbid bid returns to its bidder's balance the same way, and `withdraw` is what moves a balance back out.
 
 An auction row holding more than one asset predates v2's removal of bundle listings and can no longer be bid on or claimed. Bidding on one, claiming one, or cancelling one dissolves it instead: the standing bid returns to the bidder's balance, the assets return to the seller, the row is erased, and the transaction commits. Nothing guards against that, since these actions are handed an auction id and this SDK cannot see how many assets the row holds, and a bundle row is an ordinary auction on a chain still running v1. Nothing is stranded either way, which is what keeps it on the documented side of the line.
 
@@ -367,7 +367,7 @@ const withdrawn = builder.cancelbuyo('7');                // the buyer changes t
 const refused = builder.declinebuyo('7', 'not for sale'); // the recipient says no
 ```
 
-`createbuyo` spends the price from the buyer's market balance, the way a bid does, so a deposit transfer usually comes first. Cancelling and declining both return it.
+`createbuyo` spends the price from the buyer's market balance, the way a bid does, so a `deposit` usually comes first. Cancelling and declining both return it.
 
 Accepting is a composed flow, because the contract takes no offer id. `acceptbuyo` reads the globally last created row of the AtomicAssets offers table and checks it against the buyoffer, so the offer has to be created in the same transaction, immediately before it:
 
@@ -412,6 +412,20 @@ const fulfilled = builder.fulfillTemplateBuyofferActions({
 
 The same-transaction rule and the no-other-`createoffer` rule hold unchanged, and `fulfilltbuyo` is likewise reachable only through this helper. This one carries no bundle guard, a template buyoffer naming a single asset by construction.
 
+### Funding a market balance
+
+Bids, buyoffers, and purchases all spend a balance the market contract holds for the account rather than tokens sitting in its wallet. `deposit` builds the transfer that credits one: a `transfer` on the settlement token's own contract, sent to the market contract, carrying memo `deposit`. That memo is what the contract's notify handler reads, so no other transfer credits a balance.
+
+```ts
+const funded = builder.deposit('buyeracct111', '100.00000000 WAX', 'eosio.token');
+```
+
+The action belongs to the token, not to AtomicMarket, which is why it names `token_contract`. Take that value from `IMarketToken.token_contract`: `eosio.token` is WAX's own token contract, not every settlement token's. `withdraw` is how an owner moves a balance back out, and `deposit` how they put one in. The contract also credits a balance on its own, for sale proceeds, an outbid bid, and a cancelled or declined buyoffer, and debits one for every bid, buyoffer, and purchase.
+
+The quantity is chain notation and passes through verbatim. Nothing checks it here, because there is no second field to check it against: the purchase guards below compare a quantity with a sale's settlement symbol or with its listing price, and a bare deposit carries neither.
+
+`purchaseSaleActions` composes this same action as the middle of its triple, so a purchase built that way needs no separate deposit.
+
 ### What the builders validate
 
 Almost nothing, deliberately. These are composition helpers over values you already trust: they emit what you hand them, and checking a sale you read from an API is your side of that line. The exceptions all share one property, that their failure is a wrong payment rather than a rejected transaction, and each names the offending values in the error:
@@ -427,6 +441,14 @@ The symbol checks turn on the discriminator the contract itself uses, whether th
 Two of them do foreclose a purchase the chain would have taken, deliberately. Requiring a supplied `settlement_quantity` to equal `listing_price` rules out depositing more than the sale costs, which the chain accepts and leaves as balance. Requiring one at all on the oracle branch rules out depositing nothing and letting a standing balance pay, which the chain also accepts. Both are legitimate for a caller who means them and indistinguishable from a wrong amount for one who does not, and the helper cannot see a balance to tell them apart. If you want either, assemble the transaction from `assertsale`, your own transfer, and `purchasesale` on the builder, which assert nothing.
 
 Nothing here reads chain state. Whether a symbol is supported, and whether a pairing of two is registered, is chain state, which is why `announceSaleActions` checks nothing at all and why the settlement amount an oracle-settled sale deposits goes unchecked here, the helper never being handed the pair it derives from. Bound anything else you read from a response before you trust it.
+
+## What's new in 2.5.0
+
+Builds the deposit that funds a market balance, instead of leaving it to each integration.
+
+### Features
+
+- `deposit` builds the market-balance transfer described above, on the builder and the generator alike; `purchaseSaleActions` now composes it instead of assembling its own transfer, with the emitted triple unchanged. (#28)
 
 ## What's new in 2.4.1
 

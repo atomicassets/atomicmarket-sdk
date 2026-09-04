@@ -433,6 +433,91 @@ describe('MarketActionBuilder composed sale flows', () => {
         ]);
     });
 
+    // The two triples below are pinned whole, action for action and field for
+    // field, rather than sampled a property at a time. Each of the three
+    // actions comes from a separate builder, and the composed helper is the
+    // only place their order, their owning contracts and the deposit memo meet,
+    // so a drift in any one of them has to surface as a diff here.
+    it('purchaseSaleActions emits this exact triple for a sale settling the symbol it priced in', () => {
+        expect(builder.purchaseSaleActions(plainSale)).to.deep.equal([
+            {
+                account: contract,
+                name: 'assertsale',
+                data: {
+                    sale_id: '42',
+                    asset_ids_to_assert: ['1099511627776'],
+                    listing_price_to_assert: '100.00000000 WAX',
+                    settlement_symbol_to_assert: '8,WAX'
+                }
+            },
+            {
+                account: 'eosio.token',
+                name: 'transfer',
+                data: {
+                    from: 'buyeracct111',
+                    to: contract,
+                    quantity: '100.00000000 WAX',
+                    memo: 'deposit'
+                }
+            },
+            {
+                account: contract,
+                name: 'purchasesale',
+                data: {
+                    buyer: 'buyeracct111',
+                    sale_id: '42',
+                    intended_delphi_median: '0',
+                    taker_marketplace: 'mymarketacct'
+                }
+            }
+        ]);
+    });
+
+    it('purchaseSaleActions emits this exact triple for an oracle-settled sale, the deposit carrying the derived quantity', () => {
+        expect(builder.purchaseSaleActions(delphiSale)).to.deep.equal([
+            {
+                account: contract,
+                name: 'assertsale',
+                data: {
+                    sale_id: '42',
+                    asset_ids_to_assert: ['1099511627776'],
+                    listing_price_to_assert: '1.00 USD',
+                    settlement_symbol_to_assert: '8,WAX'
+                }
+            },
+            {
+                account: 'eosio.token',
+                name: 'transfer',
+                data: {
+                    from: 'buyeracct111',
+                    to: contract,
+                    quantity: '24.93765586 WAX',
+                    memo: 'deposit'
+                }
+            },
+            {
+                account: contract,
+                name: 'purchasesale',
+                data: {
+                    buyer: 'buyeracct111',
+                    sale_id: '42',
+                    intended_delphi_median: '401',
+                    taker_marketplace: 'mymarketacct'
+                }
+            }
+        ]);
+    });
+
+    // The triple's middle action is the deposit builder's output and nothing
+    // else, which is what keeps the memo literal in one place.
+    it('the transfer in the triple is what deposit builds for the same buyer, quantity and token contract', () => {
+        const [, plainTransfer] = builder.purchaseSaleActions(plainSale);
+        const [, delphiTransfer] = builder.purchaseSaleActions(delphiSale);
+
+        expect([plainTransfer]).to.deep.equal(builder.deposit('buyeracct111', '100.00000000 WAX', 'eosio.token'));
+        expect([delphiTransfer]).to.deep.equal(builder.deposit('buyeracct111', '24.93765586 WAX', 'eosio.token'));
+    });
+
     it('the transfer deposits the listing price into the market contract with memo deposit when no settlement_quantity is given', () => {
         const [, transfer] = builder.purchaseSaleActions(plainSale);
 
@@ -1198,6 +1283,38 @@ describe('MarketActionBuilder marketplace and balance actions', () => {
         }]);
     });
 
+    it('deposit emits a transfer to the market contract with memo deposit, on the token contract rather than the market', () => {
+        const actions = builder.deposit('alice', '1.00000000 WAX', 'eosio.token');
+
+        expect(actions).to.deep.equal([{
+            account: 'eosio.token',
+            name: 'transfer',
+            data: {
+                from: 'alice',
+                to: contract,
+                quantity: '1.00000000 WAX',
+                memo: 'deposit'
+            }
+        }]);
+    });
+
+    it('deposit names the token contract it is handed rather than a hardcoded eosio.token', () => {
+        const [action] = builder.deposit('alice', '10.0000 CREDIT', 'other.token');
+
+        expect(action.account).to.equal('other.token');
+        expect(action.data.to).to.equal(contract);
+        expect(action.data.quantity).to.equal('10.0000 CREDIT');
+    });
+
+    it('deposit and withdraw are the two halves of a market balance, the deposit alone leaving AtomicMarket unnamed as the action account', () => {
+        const [deposited] = builder.deposit('alice', '1.00000000 WAX', 'eosio.token');
+        const [withdrawn] = builder.withdraw('alice', '1.00000000 WAX');
+
+        expect(deposited.account).to.not.equal(contract);
+        expect(withdrawn.account).to.equal(contract);
+        expect(AtomicMarketActions).to.not.have.property('deposit');
+    });
+
     it('the builder emits no authorization and the generator emits the builder payload plus the passed authorization', async () => {
         const cases: Array<[EosioActionData[], EosioActionObject[]]> = [
             [
@@ -1207,6 +1324,10 @@ describe('MarketActionBuilder marketplace and balance actions', () => {
             [
                 builder.withdraw('alice', '1.00000000 WAX'),
                 await generator.withdraw(authorization, 'alice', '1.00000000 WAX')
+            ],
+            [
+                builder.deposit('alice', '1.00000000 WAX', 'eosio.token'),
+                await generator.deposit(authorization, 'alice', '1.00000000 WAX', 'eosio.token')
             ]
         ];
 
